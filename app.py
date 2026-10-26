@@ -14,6 +14,8 @@ app = Flask(__name__)
 # Initialize Google GenAI Client
 ai_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
+# Dynamic Paystack and Security Configuration
+PAYSTACK_PUBLIC_KEY = os.environ.get("PAYSTACK_PUBLIC_KEY", "pk_live_YOUR_PAYSTACK_PUBLIC_KEY")
 PAYSTACK_SECRET_KEY = os.environ.get("PAYSTACK_SECRET_KEY")
 VIRAL_SHARED_SECRET = os.environ.get("VIRAL_SHARED_SECRET", "SystemViralToken2026")
 ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "123456789")
@@ -121,7 +123,7 @@ def dynamic_pseo_frontend(seo_slug="default"):
 
     <script>
         const RENDER_ROBOT_URL = window.location.origin + "/api/process";
-        const PAYSTACK_KEY = "pk_live_YOUR_PAYSTACK_PUBLIC_KEY";
+        const PAYSTACK_KEY = "{PAYSTACK_PUBLIC_KEY}";
 
         function calculateMetric() {{
             const val = parseFloat(document.getElementById('calcInput').value) || 0;
@@ -204,7 +206,7 @@ def dynamic_pseo_frontend(seo_slug="default"):
 # --- INSTANT DOCUMENT "RESCUE" TOOL ROUTE ---
 @app.route('/rescue-tool')
 def document_rescue_page():
-    html_template = """
+    html_template = f"""
     <!DOCTYPE html>
     <html lang="en">
     <head>
@@ -213,15 +215,15 @@ def document_rescue_page():
         <title>Instant Document & Text Rescue Tool</title>
         <script src="https://js.paystack.co/v1/inline.js"></script>
         <style>
-            body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 20px; display: flex; justify-content: center; }
-            .container { background: #1e293b; border: 1px solid #334155; max-width: 550px; width: 100%; padding: 25px; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.4); margin-top: 30px; }
-            textarea { width: 100%; height: 160px; background: #0f172a; border: 1px solid #475569; color: #fff; border-radius: 6px; padding: 12px; box-sizing: border-box; font-size: 14px; resize: none; margin-top: 10px; }
-            button.action-btn { background: #10b981; color: white; border: none; width: 100%; padding: 14px; border-radius: 6px; font-weight: bold; cursor: pointer; margin-top: 15px; font-size: 15px; }
-            button.action-btn:disabled { background: #475569; cursor: not-allowed; }
-            .output-box { background: #0f172a; border-left: 3px solid #10b981; padding: 15px; margin-top: 20px; font-size: 14px; color: #cbd5e1; white-space: pre-wrap; display: none; border-radius: 4px; }
-            .modal { display: none; position: fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); justify-content: center; align-items: center; }
-            .modal-card { background: #1e293b; border: 1px solid #334155; padding: 25px; border-radius: 8px; text-align: center; max-width: 340px; width: 100%; }
-            .modal-card button { width: 100%; padding: 12px; border: none; border-radius: 6px; margin-top: 10px; font-weight: bold; cursor: pointer; }
+            body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 20px; display: flex; justify-content: center; }}
+            .container {{ background: #1e293b; border: 1px solid #334155; max-width: 550px; width: 100%; padding: 25px; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.4); margin-top: 30px; }}
+            textarea {{ width: 100%; height: 160px; background: #0f172a; border: 1px solid #475569; color: #fff; border-radius: 6px; padding: 12px; box-sizing: border-box; font-size: 14px; resize: none; margin-top: 10px; }}
+            button.action-btn {{ background: #10b981; color: white; border: none; width: 100%; padding: 14px; border-radius: 6px; font-weight: bold; cursor: pointer; margin-top: 15px; font-size: 15px; }}
+            button.action-btn:disabled {{ background: #475569; cursor: not-allowed; }}
+            .output-box {{ background: #0f172a; border-left: 3px solid #10b981; padding: 15px; margin-top: 20px; font-size: 14px; color: #cbd5e1; white-space: pre-wrap; display: none; border-radius: 4px; }}
+            .modal {{ display: none; position: fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); justify-content: center; align-items: center; }}
+            .modal-card {{ background: #1e293b; border: 1px solid #334155; padding: 25px; border-radius: 8px; text-align: center; max-width: 340px; width: 100%; }}
+            .modal-card button {{ width: 100%; padding: 12px; border: none; border-radius: 6px; margin-top: 10px; font-weight: bold; cursor: pointer; }}
         </style>
     </head>
     <body>
@@ -246,38 +248,38 @@ def document_rescue_page():
 
     <script>
         const RESCUE_ENDPOINT = window.location.origin + "/api/rescue-document";
-        const PAYSTACK_PUBLIC_KEY = "pk_live_YOUR_PAYSTACK_PUBLIC_KEY";
+        const PAYSTACK_PUBLIC_KEY = "{PAYSTACK_PUBLIC_KEY}";
 
-        function openRescueModal() {
+        function openRescueModal() {{
             if(!document.getElementById('messyInput').value.trim()) return alert("Please paste your text content first.");
             document.getElementById('rescueModal').style.display = 'flex';
-        }
-        function closeRescueModal() { document.getElementById('rescueModal').style.display = 'none'; }
+        }}
+        function closeRescueModal() {{ document.getElementById('rescueModal').style.display = 'none'; }}
 
-        function payRescueWithPaystack() {
+        function payRescueWithPaystack() {{
             closeRescueModal();
-            let handler = PaystackPop.setup({
+            let handler = PaystackPop.setup({{
                 key: PAYSTACK_PUBLIC_KEY,
                 email: 'user_' + Date.now() + '@documentrescue.io',
                 amount: 150000,
-                metadata: { text_payload: document.getElementById('messyInput').value },
-                callback: function(response){
-                    fetch(RESCUE_ENDPOINT, {
+                metadata: {{ text_payload: document.getElementById('messyInput').value }},
+                callback: function(response){{
+                    fetch(RESCUE_ENDPOINT, {{
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ reference: response.reference, text_payload: document.getElementById('messyInput').value })
-                    }).then(res => res.json()).then(data => {
-                        if (data.status === "success") {
+                        headers: {{ 'Content-Type': 'application/json' }},
+                        body: JSON.stringify({{ reference: response.reference, text_payload: document.getElementById('messyInput').value }})
+                    }}).then(res => res.json()).then(data => {{
+                        if (data.status === "success") {{
                             const out = document.getElementById('rescueOutput');
                             out.style.display = 'block';
                             out.innerText = data.cleaned_text;
                             document.getElementById('messyInput').value = data.cleaned_text;
-                        }
-                    });
-                }
-            });
+                        }}
+                    }});
+                }}
+            }});
             handler.openIframe();
-        }
+        }}
     </script>
     </body>
     </html>
@@ -287,19 +289,20 @@ def document_rescue_page():
 # --- DRAG-AND-DROP FILE STREAM RESCUER ROUTE ---
 @app.route('/file-rescue-tool')
 def file_rescue_frontend():
-    html_content = """
+    html_content = f"""
     <!DOCTYPE html>
     <html lang="en">
     <head>
         <meta charset="UTF-8">
         <title>Convert Document to Government Portal Size</title>
+        <script src="https://js.paystack.co/v1/inline.js"></script>
         <style>
-            body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 20px; display: flex; justify-content: center; }
-            .container { background: #1e293b; border: 1px solid #334155; max-width: 520px; width: 100%; padding: 25px; border-radius: 12px; margin-top: 30px; }
-            .dropzone { border: 2px dashed #475569; padding: 30px; text-align: center; border-radius: 8px; cursor: pointer; background: #0f172a; }
-            button.action-btn { background: #10b981; color: white; border: none; width: 100%; padding: 14px; border-radius: 6px; font-weight: bold; cursor: pointer; margin-top: 15px; }
-            button.action-btn:disabled { background: #475569; cursor: not-allowed; }
-            .output-box { background: #0f172a; border-left: 3px solid #10b981; padding: 15px; margin-top: 20px; font-size: 14px; display: none; }
+            body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 20px; display: flex; justify-content: center; }}
+            .container {{ background: #1e293b; border: 1px solid #334155; max-width: 520px; width: 100%; padding: 25px; border-radius: 12px; margin-top: 30px; }}
+            .dropzone {{ border: 2px dashed #475569; padding: 30px; text-align: center; border-radius: 8px; cursor: pointer; background: #0f172a; }}
+            button.action-btn {{ background: #10b981; color: white; border: none; width: 100%; padding: 14px; border-radius: 6px; font-weight: bold; cursor: pointer; margin-top: 15px; }}
+            button.action-btn:disabled {{ background: #475569; cursor: not-allowed; }}
+            .output-box {{ background: #0f172a; border-left: 3px solid #10b981; padding: 15px; margin-top: 20px; font-size: 14px; display: none; }}
         </style>
     </head>
     <body>
@@ -310,26 +313,42 @@ def file_rescue_frontend():
             <p id="fileNameDisplay" style="margin:0; color:#94a3b8; font-size:14px;">Click to select document or PDF</p>
             <input type="file" id="fileInput" style="display:none" onchange="selectedFile=this.files[0];document.getElementById('fileNameDisplay').innerText=selectedFile.name;document.getElementById('processFileBtn').disabled=false;">
         </div>
-        <button id="processFileBtn" class="action-btn" onclick="processFileStream()" disabled>Process & Format (₦1,500)</button>
+        <button id="processFileBtn" class="action-btn" onclick="initiateFilePaystack()" disabled>Process & Format (₦1,500)</button>
         <div id="fileOutputBox" class="output-box"></div>
     </div>
     <script>
         let selectedFile = null;
-        async function processFileStream() {
+        const PAYSTACK_PUBLIC_KEY = "{PAYSTACK_PUBLIC_KEY}";
+
+        function initiateFilePaystack() {{
             if (!selectedFile) return;
+            let handler = PaystackPop.setup({{
+                key: PAYSTACK_PUBLIC_KEY,
+                email: 'user_' + Date.now() + '@filerescue.io',
+                amount: 150000,
+                callback: function(response){{
+                    processFileStream(response.reference);
+                }}
+            }});
+            handler.openIframe();
+        }}
+
+        async function processFileStream(reference) {{
             const formData = new FormData();
             formData.append("file", selectedFile);
+            formData.append("reference", reference);
+
             const btn = document.getElementById('processFileBtn');
             btn.disabled = true; btn.innerText = "⚡ Optimizing...";
-            try {
-                const res = await fetch('/api/process-file-stream', { method: 'POST', body: formData });
+            try {{
+                const res = await fetch('/api/process-file-stream', {{ method: 'POST', body: formData }});
                 const result = await res.json();
                 const out = document.getElementById('fileOutputBox');
                 out.style.display = 'block';
-                out.innerHTML = `✅ <strong>Optimized!</strong><br>New Size: ${result.new_size_kb} KB<br><a href="#" style="color:#10b981;">Download Rescued File</a>`;
-            } catch(e) { alert("Error uploading file."); }
-            finally { btn.disabled = false; btn.innerText = "Process & Format (₦1,500)"; }
-        }
+                out.innerHTML = `✅ <strong>Optimized!</strong><br>New Size: ${{result.new_size_kb}} KB<br><a href="#" style="color:#10b981;">Download Rescued File</a>`;
+            }} catch(e) {{ alert("Error uploading file."); }}
+            finally {{ btn.disabled = false; btn.innerText = "Process & Format (₦1,500)"; }}
+        }}
     </script>
     </body>
     </html>
@@ -346,6 +365,7 @@ def rescue_document_api():
         
         response = ai_client.models.generate_content(model='gemini-3.8-flash', contents=f"Format into clean professional text:\n{text_payload}")
         log_transaction(reference=data.get("reference", f"rescue_{os.urandom(4).hex()}"), email="user@system", amount=1500, tier="document_rescue")
+        send_telegram_alert(f"💰 **Document Rescue Completed!**\nRef: `{data.get('reference')}`")
         return jsonify({"status": "success", "cleaned_text": response.text}), 200
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -355,10 +375,14 @@ def process_file_stream():
     try:
         if 'file' not in request.files: return jsonify({"status": "error"}), 400
         file = request.files['file']
+        reference = request.form.get("reference", f"file_{os.urandom(4).hex()}")
+        
         path = os.path.join("/tmp", secure_filename(file.filename))
         file.save(path)
         size_kb = round(os.path.getsize(path) * 0.4 / 1024, 1)
-        log_transaction(reference=f"file_{os.urandom(4).hex()}", email="file_user@system", amount=1500, tier="file_rescue")
+        
+        log_transaction(reference=reference, email="file_user@system", amount=1500, tier="file_rescue")
+        send_telegram_alert(f"📂 **File Stream Compressed!**\nRef: `{reference}`")
         return jsonify({"status": "success", "new_size_kb": size_kb}), 200
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -396,6 +420,7 @@ def generate_pseo_page():
     
     content = generate_ai_quick_prompt(f"Write a 200-word guide for: {keyword}")
     DYNAMIC_PSEO_PAGES[slug] = {"title": keyword.title(), "heading": keyword.title(), "subheading": content[:150], "type": "utility"}
+    send_telegram_alert(f"🚀 **New PSEO Page Deployed!**\nKeyword: `{keyword}`\nSlug: `/{slug}`")
     return jsonify({"status": "success", "url": f"https://micro-utility-engine.onrender.com/{slug}"}), 201
 
 @app.route('/api/ingest-lead', methods=['POST'])
@@ -411,6 +436,8 @@ def ingest_lead():
                 (data.get("vertical"), data.get("company_name"), data.get("location"), data.get("contact_email"), data.get("pain_point"), pitch))
     conn.commit()
     cur.close(); conn.close()
+    
+    send_telegram_alert(f"🎯 **New Lead Ingested!**\nCompany: {data.get('company_name')}")
     return jsonify({"status": "success"}), 201
 
 @app.route('/api/get-leads', methods=['GET'])
