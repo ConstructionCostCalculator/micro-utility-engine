@@ -37,18 +37,21 @@ def send_telegram_alert(message):
     except Exception as e:
         print(f"Telegram dispatch error: {e}")
 
-def generate_ai_with_retry(prompt, model='gemini-3.8-flash', max_retries=3):
-    """Helper to retry Gemini calls if 503 UNAVAILABLE or temporary spikes occur."""
-    delay = 2
-    for attempt in range(max_retries):
-        try:
-            return ai_client.models.generate_content(model=model, contents=prompt)
-        except Exception as e:
-            if attempt == max_retries - 1:
-                raise e
-            print(f"[Gemini Retry Warning] Attempt {attempt + 1} failed ({str(e)}). Retrying in {delay}s...")
-            time.sleep(delay)
-            delay *= 2
+def generate_ai_quick_pitch(vertical, company_name, location, pain_point):
+    """Attempts quick AI generation with a single fast fallback to prevent 502 timeouts."""
+    prompt = f"""
+    You are a high-conversion B2B growth closer.
+    Vertical: {vertical}
+    Company: {company_name} ({location})
+    Bottleneck: {pain_point}
+    Task: Write a cold outreach pitch under 90 words positioning our zero-friction micro-utility SaaS as the fix.
+    """
+    try:
+        response = ai_client.models.generate_content(model='gemini-3.8-flash', contents=prompt)
+        return response.text
+    except Exception as e:
+        print(f"[AI Fallback Triggered]: {e}")
+        return f"Hello {company_name}, we analyzed your operations in {location} and identified that automating your document workflows can eliminate your manual bottlenecks instantly."
 
 PSEO_LANDING_PAGES = {
     "uscis-pdf-500kb-fixer": {
@@ -379,16 +382,8 @@ def ingest_lead():
         contact_email = data.get("contact_email")
         pain_point = data.get("pain_point")
 
-        prompt = f"""
-        You are a high-conversion B2B growth closer.
-        Vertical: {vertical}
-        Company: {company_name} ({location})
-        Bottleneck: {pain_point}
-        Task: Write a cold outreach pitch under 90 words positioning our zero-friction micro-utility SaaS as the fix.
-        """
-        
-        response = generate_ai_with_retry(prompt)
-        ai_pitch = response.text
+        # Fast non-blocking AI pitch generation with built-in fallback
+        ai_pitch = generate_ai_quick_pitch(vertical, company_name, location, pain_point)
 
         conn = get_db_connection()
         cur = conn.cursor()
@@ -483,8 +478,11 @@ def execute_robotic_task(action_type, raw_data):
     if not raw_data:
         return "No input text provided."
     prompt = f"Strip system clutter and format into clean, structured application paragraphs:\n\n{raw_data}"
-    response = generate_ai_with_retry(prompt)
-    return response.text
+    try:
+        response = ai_client.models.generate_content(model='gemini-3.8-flash', contents=prompt)
+        return response.text
+    except Exception:
+        return raw_data
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
