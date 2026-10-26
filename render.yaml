@@ -19,3 +19,18 @@ services:
         sync: false
       - key: TELEGRAM_CHAT_ID
         sync: false
+
+  - type: cron
+    name: omni-lead-scanner-cron
+    env: python
+    schedule: "0 8 * * *"  # Runs every day at 8:00 AM UTC
+    buildCommand: pip install -r requirements.txt
+    startCommand: python scanner.py
+    envVars:
+      - key: RENDER_EXTERNAL_URL
+        fromService:
+          type: web
+          name: micro-utility-engine
+          property: url
+      - key: ADMIN_SECRET
+        value: SuperSecureDashboardKey2026
