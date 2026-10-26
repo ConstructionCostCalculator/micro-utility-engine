@@ -4,13 +4,13 @@ on:
   schedule:
     # Runs automatically every day at 8:00 AM UTC
     - cron: '0 8 * * *'
-  workflow_dispatch: # Allows you to manually trigger it anytime from GitHub if you want
+  workflow_dispatch: # Allows manual trigger anytime from GitHub Actions tab
 
 jobs:
   run-engines:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger Daily PSEO Generation
+      - name: Trigger Daily Global PSEO Generation
         run: |
           curl -X POST https://micro-utility-engine.onrender.com/api/generate-pseo \
             -H "Content-Type: application/json" \
@@ -20,15 +20,15 @@ jobs:
               "slug": "urgent-uscis-translation-template"
             }'
 
-      - name: Trigger Automated Lead Scraper Ingestion
+      - name: Trigger Automated Global Lead Ingestion
         run: |
           curl -X POST https://micro-utility-engine.onrender.com/api/ingest-lead \
             -H "Content-Type: application/json" \
             -H "X-Admin-Secret: ${{ secrets.ADMIN_SECRET }}" \
             -d '{
-              "vertical": "Immigration & Legal Services",
-              "company_name": "Global Visa Consults Lagos",
-              "location": "Lagos",
-              "contact_email": "operations@globalvisalag.com",
-              "pain_point": "Dealing with strict document formatting limits and portal rejections."
+              "vertical": "Immigration & Global Compliance",
+              "company_name": "Apex Cloud Systems Inc.",
+              "location": "San Francisco, CA",
+              "contact_email": "executives@apexcloud.io",
+              "pain_point": "Managing complex multi-jurisdiction tax nexus and unformatted compliance data pipelines."
             }'
