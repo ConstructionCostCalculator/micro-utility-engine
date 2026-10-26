@@ -26,7 +26,7 @@ except Exception as e:
     print(f"[DB Init Warning]: {e}")
 
 def send_telegram_alert(message):
-    """Sends real-time alerts for live conversions and scraped leads."""
+    """Sends real-time alerts to your Telegram monitoring channel."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -132,7 +132,7 @@ def dynamic_pseo_frontend(seo_slug="default"):
                 const res = await fetch(`${{RENDER_ROBOT_URL}}?reference=${{reference}}`, {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ action_type: 'document_rescue', data_input: document.getElementById('mainInput').value }})
+                    body: JSON.stringify({{ action_type: 'document_rescue', data_input: document.getElementById('mainInput').value, paystack_ref: reference }})
                 }});
                 const data = await res.json();
                 if (data.status === "success") {{
@@ -170,55 +170,132 @@ def dynamic_pseo_frontend(seo_slug="default"):
 
 @app.route('/dashboard')
 def live_dashboard():
+    """Unified Live Command Center Monitoring Dashboard."""
     dashboard_html = """
     <!DOCTYPE html>
     <html lang="en">
     <head>
         <meta charset="UTF-8">
-        <title>Omni Lead Command Center</title>
+        <title>Unified Command & Monitoring Center</title>
         <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
         <style>
             body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 30px; }
             .container { max-width: 1200px; margin: auto; }
-            h1 { font-size: 24px; margin-bottom: 5px; }
-            p { color: #94a3b8; font-size: 14px; }
-            .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; margin-top: 30px; }
+            h1 { font-size: 26px; margin-bottom: 5px; }
+            .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 15px; margin: 25px 0; }
+            .stat-card { background: #1e293b; border: 1px solid #334155; padding: 20px; border-radius: 10px; }
+            .stat-card h3 { margin: 0; color: #94a3b8; font-size: 13px; text-transform: uppercase; }
+            .stat-card p { margin: 10px 0 0 0; font-size: 28px; font-weight: bold; color: #10b981; }
+            section { margin-top: 40px; }
+            h2 { font-size: 18px; border-bottom: 2px solid #334155; padding-bottom: 8px; }
+            .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; margin-top: 20px; }
             .lead-card { background: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 20px; }
             .badge { background: #3b82f6; color: white; font-size: 11px; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
             .pitch-box { background: #0f172a; border-left: 3px solid #10b981; padding: 12px; margin-top: 15px; font-size: 13px; color: #cbd5e1; white-space: pre-wrap; }
+            table { width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 8px; overflow: hidden; margin-top: 15px; }
+            th, td { padding: 12px 15px; text-align: left; font-size: 13px; border-bottom: 1px solid #334155; }
+            th { background: #1e293b; color: #94a3b8; text-transform: uppercase; font-size: 11px; }
         </style>
     </head>
     <body>
     <div class="container">
-        <h1>🚀 Live Omni-Scanner Lead Command Center</h1>
-        <p>Real live incoming leads stored permanently in PostgreSQL.</p>
-        <div id="leadsContainer" class="card-grid"><p>Loading live database leads...</p></div>
+        <h1>📊 Unified Command & Monitoring Center</h1>
+        <p>Live real-time telemetry tracking for automated B2B leads and Paystack utility transactions.</p>
+        
+        <!-- Live Telemetry Counters -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h3>Total Scraped Leads</h3>
+                <p id="statLeads">0</p>
+            </div>
+            <div class="stat-card">
+                <h3>Paid Transactions</h3>
+                <p id="statTxs">0</p>
+            </div>
+            <div class="stat-card">
+                <h3>Estimated Revenue</h3>
+                <p id="statRev">₦0</p>
+            </div>
+        </div>
+
+        <!-- Section 1: Live B2B Omni-Leads -->
+        <section>
+            <h2>🎯 Scraped B2B Leads & AI Pitches</h2>
+            <div id="leadsContainer" class="card-grid"><p style="color:#94a3b8;">Loading live leads database...</p></div>
+        </section>
+
+        <!-- Section 2: Live Paystack & Viral Utility Transactions -->
+        <section>
+            <h2>💰 Live Utility Transactions</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Reference ID</th>
+                        <th>Customer Email</th>
+                        <th>Amount</th>
+                        <th>Access Tier</th>
+                        <th>Timestamp</th>
+                    </tr>
+                </thead>
+                <tbody id="txTableBody">
+                    <tr><td colspan="5" style="color:#94a3b8;">Loading live transactions...</td></tr>
+                </tbody>
+            </table>
+        </section>
     </div>
+
     <script>
-        async function fetchLiveLeads() {
+        async function fetchDashboardData() {
             try {
-                const res = await axios.get('/api/get-leads');
-                const leads = res.data.leads;
-                const container = document.getElementById('leadsContainer');
-                if (leads.length === 0) {
-                    container.innerHTML = "<p>No live leads in DB. Ingest leads via the API endpoint.</p>";
-                    return;
+                // Fetch Stats & Transactions
+                const statsRes = await axios.get('/api/get-stats');
+                const { total_leads, total_transactions, total_revenue, transactions } = statsRes.data;
+                
+                document.getElementById('statLeads').innerText = total_leads;
+                document.getElementById('statTxs').innerText = total_transactions;
+                document.getElementById('statRev').innerText = "₦" + total_revenue.toLocaleString();
+
+                // Populate Transactions Table
+                const txTable = document.getElementById('txTableBody');
+                if (transactions.length === 0) {
+                    txTable.innerHTML = `<tr><td colspan="5" style="color:#94a3b8;">No live transactions yet.</td></tr>`;
+                } else {
+                    txTable.innerHTML = transactions.map(t => `
+                        <tr>
+                            <td><code>${t.reference}</code></td>
+                            <td>${t.customer_email || 'Anonymous / Viral'}</td>
+                            <td>₦${Number(t.amount).toLocaleString()}</td>
+                            <td><span style="color:${t.access_tier === 'paid_tier' ? '#10b981' : '#38bdf8'}">${t.access_tier}</span></td>
+                            <td>${t.created_at}</td>
+                        </tr>
+                    `).join('');
                 }
-                container.innerHTML = leads.map(l => `
-                    <div class="lead-card">
-                        <span class="badge">${l.vertical}</span>
-                        <h3 style="margin:10px 0 5px 0;">${l.company_name}</h3>
-                        <p style="margin:0; color:#38bdf8; font-size:13px;">📍 ${l.location} | 📧 ${l.contact_email}</p>
-                        <p style="margin-top:10px; font-size:13px;"><strong>Bottleneck:</strong> ${l.pain_point}</p>
-                        <div class="pitch-box"><strong>Generated Pitch:</strong><br>${l.ai_pitch}</div>
-                    </div>
-                `).join('');
+
+                // Fetch Leads Grid
+                const leadsRes = await axios.get('/api/get-leads');
+                const leads = leadsRes.data.leads;
+                const leadsContainer = document.getElementById('leadsContainer');
+                
+                if (leads.length === 0) {
+                    leadsContainer.innerHTML = "<p style='color:#94a3b8;'>No live B2B leads scanned yet.</p>";
+                } else {
+                    leadsContainer.innerHTML = leads.map(l => `
+                        <div class="lead-card">
+                            <span class="badge">${l.vertical}</span>
+                            <h3 style="margin:10px 0 5px 0;">${l.company_name}</h3>
+                            <p style="margin:0; color:#38bdf8; font-size:13px;">📍 ${l.location} | 📧 ${l.contact_email}</p>
+                            <p style="margin-top:10px; font-size:13px;"><strong>Bottleneck:</strong> ${l.pain_point}</p>
+                            <div class="pitch-box"><strong>Generated Pitch:</strong><br>${l.ai_pitch}</div>
+                        </div>
+                    `).join('');
+                }
             } catch (e) {
-                console.error(e);
+                console.error("Dashboard telemetry sync error:", e);
             }
         }
-        fetchLiveLeads();
-        setInterval(fetchLiveLeads, 10000);
+
+        fetchDashboardData();
+        setInterval(fetchDashboardData, 10000); // Live poll every 10 seconds
     </script>
     </body>
     </html>
@@ -242,6 +319,9 @@ def master_robotic_engine():
         if viral_token and hmac.compare_digest(viral_token, VIRAL_SHARED_SECRET):
             payload = request.get_json(silent=True) or {}
             output = execute_robotic_task(payload.get("action_type", "document_rescue"), payload.get("data_input"))
+            
+            # Log viral usage transaction
+            log_transaction(reference="viral_" + hashlib.md5(str(os.urandom(4)).encode()).hexdigest()[:8], email="viral_user@system", amount=0, tier="viral_tier")
             return jsonify({"status": "success", "access": "viral_tier", "result": output}), 200, headers
 
         # Tier B: Paystack Live Webhook Verification
@@ -257,13 +337,21 @@ def master_robotic_engine():
                     metadata = data_block.get("metadata", {})
                     output = execute_robotic_task(metadata.get("action_type", "document_rescue"), metadata.get("user_input_text"))
                     
-                    send_telegram_alert(f"💰 **Live Payment Captured!**\nAmount: ₦1,500\nCustomer: {data_block.get('customer',{}).get('email')}")
+                    ref = data_block.get("reference")
+                    email = data_block.get("customer", {}).get("email")
+                    amt = data_block.get("amount", 150000) / 100
+                    
+                    log_transaction(reference=ref, email=email, amount=amt, tier="paid_tier")
+                    send_telegram_alert(f"💰 **Live Payment Captured!**\nAmount: ₦{amt:,.2f}\nCustomer: {email}")
                     return jsonify({"status": "success", "access": "paid_tier", "result": output}), 200, headers
 
-        # Immediate Fallback Execution for Direct Client-side Polling
+        # Client-side Direct Execution with Paystack Reference
         payload = request.get_json(silent=True) or {}
         if payload.get("data_input"):
             output = execute_robotic_task(payload.get("action_type", "document_rescue"), payload.get("data_input"))
+            ref = payload.get("paystack_ref", "direct_" + hashlib.md5(str(os.urandom(4)).encode()).hexdigest()[:8])
+            
+            log_transaction(reference=ref, email="client_direct@paystack", amount=1500, tier="paid_tier")
             return jsonify({"status": "success", "result": output}), 200, headers
 
         return jsonify({"status": "denied", "message": "Invalid auth or payload."}), 403, headers
@@ -319,6 +407,51 @@ def get_leads():
         return jsonify({"status": "success", "leads": rows}), 200
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/get-stats', methods=['GET'])
+def get_stats():
+    """Returns telemetry metrics and live transaction logs for the dashboard."""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        cur.execute("SELECT COUNT(*) AS count FROM leads;")
+        total_leads = cur.fetchone()['count']
+        
+        cur.execute("SELECT COUNT(*) AS count, COALESCE(SUM(amount), 0) AS revenue FROM transactions;")
+        tx_stats = cur.fetchone()
+        total_transactions = tx_stats['count']
+        total_revenue = float(tx_stats['revenue'])
+        
+        cur.execute("SELECT reference, customer_email, amount, access_tier, created_at FROM transactions ORDER BY created_at DESC LIMIT 15;")
+        transactions = cur.fetchall()
+        
+        cur.close()
+        conn.close()
+        
+        return jsonify({
+            "total_leads": total_leads,
+            "total_transactions": total_transactions,
+            "total_revenue": total_revenue,
+            "transactions": transactions
+        }), 200
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+def log_transaction(reference, email, amount, tier):
+    """Safely records a transaction to PostgreSQL."""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO transactions (reference, customer_email, amount, access_tier) VALUES (%s, %s, %s, %s) ON CONFLICT (reference) DO NOTHING;",
+            (reference, email, amount, tier)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"[DB Log Error]: {e}")
 
 def execute_robotic_task(action_type, raw_data):
     if not raw_data:
