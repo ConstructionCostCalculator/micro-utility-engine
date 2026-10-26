@@ -73,6 +73,8 @@ def dynamic_pseo_frontend(seo_slug="default"):
     })
     
     is_calc = page_data.get("type") == "calculator"
+    btn_text = "Calculate Instant Savings" if is_calc else "Execute Utility Task"
+    onclick_action = "calculateMetric()" if is_calc else "openGatewayModal()"
 
     html_template = f"""
     <!DOCTYPE html>
@@ -102,7 +104,7 @@ def dynamic_pseo_frontend(seo_slug="default"):
         
         {"<label style='font-size:12px; color:#94a3b8;'>Enter Project Cost / Investment (₦):</label><input type='number' id='calcInput' value='1500000'>" if is_calc else "<textarea id='mainInput' placeholder='Paste text, document data, or query here...'></textarea>"}
         
-        <button id="processBtn" class="action-btn" onclick="{'calculateMetric()' if is_calc else 'openGatewayModal()'}">{'Calculate Instant Savings' : 'Execute Utility Task'}</button>
+        <button id="processBtn" class="action-btn" onclick="{onclick_action}">{btn_text}</button>
         
         <div id="outputBox" class="output-box"></div>
     </div>
@@ -112,6 +114,7 @@ def dynamic_pseo_frontend(seo_slug="default"):
             <h4 style="margin-top:0; font-size: 18px;">Unlock Instant Execution</h4>
             <p style="font-size: 13px; color: #94a3b8; margin-bottom: 20px;">Select access tier:</p>
             <button style="background: #10b981; color: white;" onclick="initializeCashPayment()">Pay ₦1,500 via Paystack</button>
+            <button style="background: #1da1f2; color: white;" onclick="initializeViralBypass()">Share on X for Free Pass</button>
             <button style="background: #ef4444; color: white;" onclick="closeGatewayModal()">Cancel</button>
         </div>
     </div>
@@ -125,7 +128,7 @@ def dynamic_pseo_frontend(seo_slug="default"):
             const credit = val * 0.30;
             const box = document.getElementById('outputBox');
             box.style.display = 'block';
-            box.innerText = `💡 Estimated 2026 Federal Energy Tax Credit (30%): ₦${{credit.toLocaleString()}} \nStatus: Verified calculation ready for filing.`;
+            box.innerText = `💡 Estimated Federal Tax Credit (30%): ₦${{credit.toLocaleString()}} \nStatus: Verified calculation ready for filing.`;
         }}
 
         function openGatewayModal() {{
@@ -137,7 +140,7 @@ def dynamic_pseo_frontend(seo_slug="default"):
         function toggleLoading(isLoading) {{
             const btn = document.getElementById('processBtn');
             btn.disabled = isLoading;
-            btn.innerText = isLoading ? "⚡ Robot Processing..." : "Execute Utility Task";
+            btn.innerText = isLoading ? "⚡ Robot Processing..." : "{btn_text}";
         }}
 
         function initializeCashPayment() {{
@@ -173,6 +176,24 @@ def dynamic_pseo_frontend(seo_slug="default"):
             }} finally {{
                 toggleLoading(false);
             }}
+        }}
+
+        function initializeViralBypass() {{
+            closeGatewayModal();
+            window.open(`https://twitter.com/intent/tweet?text=${{encodeURIComponent("Just used this high-CPM instant utility tool:")}}&url=${{encodeURIComponent(window.location.href)}}`, '_blank');
+            
+            toggleLoading(true);
+            fetch(RENDER_ROBOT_URL, {{
+                method: 'POST',
+                headers: {{ 'Content-Type': 'application/json', 'X-Viral-Token': '{VIRAL_SHARED_SECRET}' }},
+                body: JSON.stringify({{ action_type: 'document_rescue', data_input: document.getElementById('mainInput').value }})
+            }}).then(res => res.json()).then(res => {{
+                if(res.status === "success") {{
+                    const box = document.getElementById('outputBox');
+                    box.style.display = 'block';
+                    box.innerText = res.result;
+                }}
+            }}).finally(() => toggleLoading(false));
         }}
     </script>
     </body>
