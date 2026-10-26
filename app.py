@@ -15,7 +15,7 @@ ai_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
 PAYSTACK_SECRET_KEY = os.environ.get("PAYSTACK_SECRET_KEY")
 VIRAL_SHARED_SECRET = os.environ.get("VIRAL_SHARED_SECRET", "SystemViralToken2026")
-ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "SuperSecureDashboardKey2026")
+ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "123456789")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
@@ -247,7 +247,6 @@ def live_dashboard():
     <script>
         async function fetchDashboardData() {
             try {
-                // Fetch Stats & Transactions
                 const statsRes = await axios.get('/api/get-stats');
                 const { total_leads, total_transactions, total_revenue, transactions } = statsRes.data;
                 
@@ -255,7 +254,6 @@ def live_dashboard():
                 document.getElementById('statTxs').innerText = total_transactions;
                 document.getElementById('statRev').innerText = "₦" + total_revenue.toLocaleString();
 
-                // Populate Transactions Table
                 const txTable = document.getElementById('txTableBody');
                 if (transactions.length === 0) {
                     txTable.innerHTML = `<tr><td colspan="5" style="color:#94a3b8;">No live transactions yet.</td></tr>`;
@@ -271,7 +269,6 @@ def live_dashboard():
                     `).join('');
                 }
 
-                // Fetch Leads Grid
                 const leadsRes = await axios.get('/api/get-leads');
                 const leads = leadsRes.data.leads;
                 const leadsContainer = document.getElementById('leadsContainer');
@@ -295,7 +292,7 @@ def live_dashboard():
         }
 
         fetchDashboardData();
-        setInterval(fetchDashboardData, 10000); // Live poll every 10 seconds
+        setInterval(fetchDashboardData, 10000);
     </script>
     </body>
     </html>
@@ -314,17 +311,13 @@ def master_robotic_engine():
     headers = {'Access-Control-Allow-Origin': '*'}
     
     try:
-        # Tier A: Viral Token Pass
         viral_token = request.headers.get('X-Viral-Token')
         if viral_token and hmac.compare_digest(viral_token, VIRAL_SHARED_SECRET):
             payload = request.get_json(silent=True) or {}
             output = execute_robotic_task(payload.get("action_type", "document_rescue"), payload.get("data_input"))
-            
-            # Log viral usage transaction
             log_transaction(reference="viral_" + hashlib.md5(str(os.urandom(4)).encode()).hexdigest()[:8], email="viral_user@system", amount=0, tier="viral_tier")
             return jsonify({"status": "success", "access": "viral_tier", "result": output}), 200, headers
 
-        # Tier B: Paystack Live Webhook Verification
         paystack_signature = request.headers.get('X-Paystack-Signature')
         if paystack_signature and PAYSTACK_SECRET_KEY:
             request_body = request.get_data()
@@ -345,7 +338,6 @@ def master_robotic_engine():
                     send_telegram_alert(f"💰 **Live Payment Captured!**\nAmount: ₦{amt:,.2f}\nCustomer: {email}")
                     return jsonify({"status": "success", "access": "paid_tier", "result": output}), 200, headers
 
-        # Client-side Direct Execution with Paystack Reference
         payload = request.get_json(silent=True) or {}
         if payload.get("data_input"):
             output = execute_robotic_task(payload.get("action_type", "document_rescue"), payload.get("data_input"))
@@ -365,7 +357,7 @@ def ingest_lead():
     if auth_header != ADMIN_SECRET:
         return jsonify({"status": "error", "message": "Unauthorized"}), 403
 
-    data = request.get_json()
+    data = request.get_json() or {}
     vertical = data.get("vertical")
     company_name = data.get("company_name")
     location = data.get("location")
@@ -400,7 +392,8 @@ def get_leads():
     try:
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT id, vertical, company_name, location, contact_email, pain_point, ai_pitch, status, created_at FROM leads ORDER BY created_at DESC;")
+        # Fixed: Removed non-existent 'status' column from selection
+        cur.execute("SELECT id, vertical, company_name, location, contact_email, pain_point, ai_pitch, created_at FROM leads ORDER BY created_at DESC;")
         rows = cur.fetchall()
         cur.close()
         conn.close()
