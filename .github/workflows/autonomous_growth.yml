@@ -1,0 +1,34 @@
+name: Autonomous Growth Engine
+
+on:
+  schedule:
+    # Runs automatically every day at 8:00 AM UTC
+    - cron: '0 8 * * *'
+  workflow_dispatch: # Allows you to manually trigger it anytime from GitHub if you want
+
+jobs:
+  run-engines:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Daily PSEO Generation
+        run: |
+          curl -X POST https://micro-utility-engine.onrender.com/api/generate-pseo \
+            -H "Content-Type: application/json" \
+            -H "X-Admin-Secret: ${{ secrets.ADMIN_SECRET }}" \
+            -d '{
+              "keyword": "urgent uscis translation and certification template 2026",
+              "slug": "urgent-uscis-translation-template"
+            }'
+
+      - name: Trigger Automated Lead Scraper Ingestion
+        run: |
+          curl -X POST https://micro-utility-engine.onrender.com/api/ingest-lead \
+            -H "Content-Type: application/json" \
+            -H "X-Admin-Secret: ${{ secrets.ADMIN_SECRET }}" \
+            -d '{
+              "vertical": "Immigration & Legal Services",
+              "company_name": "Global Visa Consults Lagos",
+              "location": "Lagos",
+              "contact_email": "operations@globalvisalag.com",
+              "pain_point": "Dealing with strict document formatting limits and portal rejections."
+            }'
