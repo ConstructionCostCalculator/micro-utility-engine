@@ -357,42 +357,61 @@ def ingest_lead():
     if auth_header != ADMIN_SECRET:
         return jsonify({"status": "error", "message": "Unauthorized"}), 403
 
-    data = request.get_json() or {}
-    vertical = data.get("vertical")
-    company_name = data.get("company_name")
-    location = data.get("location")
-    contact_email = data.get("contact_email")
-    pain_point = data.get("pain_point")
+    try:
+        data = request.get_json() or {}
+        vertical = data.get("vertical")
+        company_name = data.get("company_name")
+        location = data.get("location")
+        contact_email = data.get("contact_email")
+        pain_point = data.get("pain_point")
 
-    prompt = f"""
-    You are a high-conversion B2B growth closer.
-    Vertical: {vertical}
-    Company: {company_name} ({location})
-    Bottleneck: {pain_point}
-    Task: Write a cold outreach pitch under 90 words positioning our zero-friction micro-utility SaaS as the fix.
-    """
-    response = ai_client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
-    ai_pitch = response.text
+        prompt = f"""
+        You are a high-conversion B2B growth closer.
+        Vertical: {vertical}
+        Company: {company_name} ({location})
+        Bottleneck: {pain_point}
+        Task: Write a cold outreach pitch under 90 words positioning our zero-friction micro-utility SaaS as the fix.
+        """
+        
+        response = ai_client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
+        ai_pitch = response.text
 
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO leads (vertical, company_name, location, contact_email, pain_point, ai_pitch) VALUES (%s, %s, %s, %s, %s, %s)",
-        (vertical, company_name, location, contact_email, pain_point, ai_pitch)
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS leads (
+                id SERIAL PRIMARY KEY,
+                vertical TEXT,
+                company_name TEXT,
+                location TEXT,
+                contact_email TEXT,
+                pain_point TEXT,
+                ai_pitch TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        
+        cur.execute(
+            "INSERT INTO leads (vertical, company_name, location, contact_email, pain_point, ai_pitch) VALUES (%s, %s, %s, %s, %s, %s)",
+            (vertical, company_name, location, contact_email, pain_point, ai_pitch)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
 
-    send_telegram_alert(f"🎯 **New Live Lead Scanned!**\nCompany: {company_name}\nVertical: {vertical}")
-    return jsonify({"status": "success", "message": "Lead saved to DB."}), 201
+        send_telegram_alert(f"🎯 **New Live Lead Scanned!**\nCompany: {company_name}\nVertical: {vertical}")
+        return jsonify({"status": "success", "message": "Lead saved to DB."}), 201
+
+    except Exception as e:
+        print(f"[Ingest Lead Error]: {str(e)}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/api/get-leads', methods=['GET'])
 def get_leads():
     try:
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        # Fixed: Removed non-existent 'status' column from selection
         cur.execute("SELECT id, vertical, company_name, location, contact_email, pain_point, ai_pitch, created_at FROM leads ORDER BY created_at DESC;")
         rows = cur.fetchall()
         cur.close()
