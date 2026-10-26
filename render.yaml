@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: micro-utility-engine
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: PAYSTACK_SECRET_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: VIRAL_SHARED_SECRET
+        value: SystemViralToken2026
+      - key: ADMIN_SECRET
+        value: SuperSecureDashboardKey2026
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
