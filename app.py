@@ -373,7 +373,7 @@ def ingest_lead():
         Task: Write a cold outreach pitch under 90 words positioning our zero-friction micro-utility SaaS as the fix.
         """
         
-        response = ai_client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
+        response = ai_client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
         ai_pitch = response.text
 
         conn = get_db_connection()
@@ -469,7 +469,7 @@ def execute_robotic_task(action_type, raw_data):
     if not raw_data:
         return "No input text provided."
     prompt = f"Strip system clutter and format into clean, structured application paragraphs:\n\n{raw_data}"
-    response = ai_client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
+    response = ai_client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
     return response.text
 
 if __name__ == '__main__':
