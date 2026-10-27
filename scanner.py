@@ -1,27 +1,35 @@
 
 """
-SolveEase Broad Discovery Scanner
-=================================
+SolveEase Micro-Utility Engine — Scanner v4.0.0
 
 Purpose:
-    Discover, normalize, deduplicate, rank, and persist public signals
-    that may be useful to SolveEase's downstream components.
+- Discover recurring public task needs across broad opportunity domains.
+- Rank findings by discovery priority.
+- Calculate a separate evidence-aware value-to-money score.
+- Preserve unknown commercial facts instead of inventing them.
+- Store findings and scan history in SQLite.
 
-Design:
-    - Modular source adapters
-    - RSS/Atom and JSON feed discovery
-    - Optional configured seed URLs
-    - Persistent SQLite findings and scan history
-    - Evidence-aware scoring; no invented leads or demand claims
-    - Source health, bounded HTTP requests, and scan summaries
-    - No automatic publishing, prospect outreach, or spending
+Free/public sources:
+- Configured RSS, Atom and JSON feeds
+- Hacker News Algolia API
+- Stack Exchange API
+- GitHub Search API
 
-Python: 3.10+
-Standard library only.
+Environment variables:
+  SCANNER_DB_PATH              Optional DB path; DB_PATH is fallback
+  SCANNER_FEED_URLS            Semicolon-separated HTTPS feed URLs
+  SCANNER_ENABLE_STACKEXCHANGE true/false (default true)
+  SCANNER_ENABLE_GITHUB        true/false (default true)
+  SCANNER_MAX_ITEMS_PER_SOURCE Max results/source (default 50)
+  SCANNER_TIMEOUT              Request timeout seconds (default 15)
+  SCANNER_USER_AGENT           Optional user agent
+
+Scores are prioritization heuristics, not proof of revenue or ROI.
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import html
 import json
@@ -33,977 +41,1165 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
-from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Optional
 
 
-APP_NAME = "SolveEase Broad Discovery Scanner"
-SCANNER_VERSION = "2.0.0"
-
-DATABASE_PATH = Path(
-    os.getenv("SCANNER_DB_PATH", "solveease_scanner.sqlite3")
+VERSION = "4.0.0"
+DEFAULT_DB_PATH = os.getenv(
+    "SCANNER_DB_PATH",
+    os.getenv("DB_PATH", "data/solveease.sqlite3"),
+)
+REQUEST_TIMEOUT = max(3, int(os.getenv("SCANNER_TIMEOUT", "15")))
+MAX_ITEMS = max(5, min(100, int(os.getenv("SCANNER_MAX_ITEMS_PER_SOURCE", "50"))))
+USER_AGENT = os.getenv(
+    "SCANNER_USER_AGENT",
+    "SolveEase-MicroUtilityScanner/4.0 (+public research; contact: solveease.leads@gmail.com)",
 )
 
-REQUEST_TIMEOUT = max(2, min(
-    int(os.getenv("SCANNER_TIMEOUT_SECONDS", "12")), 30
-))
-MAX_RESPONSE_BYTES = max(16_384, min(
-    int(os.getenv("SCANNER_MAX_RESPONSE_BYTES", "1500000")),
-    5_000_000,
-))
-MAX_ITEMS_PER_SOURCE = max(5, min(
-    int(os.getenv("SCANNER_MAX_ITEMS_PER_SOURCE", "100")), 500
-))
-MAX_SOURCES_PER_RUN = max(1, min(
-    int(os.getenv("SCANNER_MAX_SOURCES_PER_RUN", "30")), 200
-))
-MAX_RUN_SECONDS = max(10, min(
-    int(os.getenv("SCANNER_MAX_RUN_SECONDS", "180")), 1800
-))
-USER_AGENT = "SolveEaseScanner/2.0 (+public-feed discovery)"
+ENABLE_STACKEXCHANGE = (
+    os.getenv("SCANNER_ENABLE_STACKEXCHANGE", "true").lower() not in
+    {"0", "false", "no", "off"}
+)
+ENABLE_GITHUB = (
+    os.getenv("SCANNER_ENABLE_GITHUB", "true").lower() not in
+    {"0", "false", "no", "off"}
+)
 
-# Optional newline-separated public feed URLs.
-# Example: SCANNER_FEED_URLS=https://example.org/feed.xml
-# Only add sources you are permitted to access.
-CONFIGURED_FEEDS = [
-    value.strip()
-    for value in os.getenv("SCANNER_FEED_URLS", "").splitlines()
-    if value.strip()
-]
-
-# These are discovery themes, not claims that demand has been proven.
-DEFAULT_THEMES: dict[str, list[str]] = {
-    "workflow_friction": [
-        "manual process", "spreadsheet", "repetitive task",
-        "time consuming", "workaround", "duplicate entry",
-        "data conversion", "batch processing",
+# Broad discovery categories. These are discovery labels, not approved niches.
+DOMAINS = {
+    "data_documents": [
+        "spreadsheet", "csv", "xlsx", "excel", "pdf", "document",
+        "file conversion", "duplicate rows", "data cleaning",
+        "formatting", "data extraction", "ocr", "merge files",
+        "split files", "bulk rename",
     ],
-    "quality_and_reliability": [
-        "incorrect output", "inaccurate", "failed export",
-        "broken workflow", "missing feature", "formatting issue",
-        "inconsistent results", "data validation",
+    "ecommerce_online_selling": [
+        "shopify", "woocommerce", "product feed", "product listing",
+        "catalog", "inventory", "sku", "marketplace", "product import",
+        "product export", "merchant center", "listing error",
     ],
-    "access_and_complexity": [
-        "too expensive", "complicated setup", "difficult to use",
-        "no free option", "limited access", "time-consuming setup",
+    "seo_web_marketing": [
+        "seo", "search console", "metadata", "meta description",
+        "structured data", "schema markup", "redirect", "sitemap",
+        "broken link", "keyword mapping", "website audit",
+        "accessibility", "page speed",
     ],
-    "commercial_intent": [
-        "looking for a tool", "need a solution", "alternative to",
-        "recommend a service", "pay for", "business workflow",
-        "automation service",
+    "business_operations_automation": [
+        "workflow", "automation", "manual process", "repetitive task",
+        "zapier", "make.com", "n8n", "integration", "report generation",
+        "reconciliation", "form processing", "copy and paste",
     ],
-    "document_and_data_tasks": [
-        "convert document", "extract data", "clean csv",
-        "format spreadsheet", "merge pdf", "parse invoice",
-        "normalize data", "generate report",
+    "software_api_troubleshooting": [
+        "api", "webhook", "integration error", "bug", "exception",
+        "deployment", "configuration", "migration", "python",
+        "authentication error", "rate limit", "debugging",
     ],
+    "finance_commerce_admin": [
+        "invoice", "expense", "bookkeeping", "payment reconciliation",
+        "transaction export", "financial report", "receipt",
+        "billing", "accounting spreadsheet",
+    ],
+    "scheduling_productivity": [
+        "calendar", "scheduling", "reminder", "task management",
+        "recurring report", "time tracking", "appointment",
+        "availability", "workflow coordination",
+    ],
+    "education_career": [
+        "resume", "cv formatting", "job application", "job listing",
+        "study materials", "course notes", "document formatting",
+        "academic references", "learning materials",
+    ],
+    "content_creator_workflows": [
+        "social media", "caption", "content repurposing",
+        "publishing workflow", "creator", "transcription",
+        "subtitle", "video metadata", "content calendar",
+    ],
+    "digital_asset_management": [
+        "file organization", "image resizing", "image conversion",
+        "metadata cleanup", "digital assets", "document indexing",
+        "file naming", "cloud storage", "bulk image",
+    ],
+    "customer_service_reputation": [
+        "support ticket", "customer support", "review response",
+        "customer feedback", "sentiment analysis", "help desk",
+        "ticket classification", "customer data",
+    ],
+    "research_information_discovery": [
+        "research", "public data", "monitoring", "comparison report",
+        "opportunity discovery", "information extraction",
+        "data aggregation", "price monitoring", "tender",
+        "grant", "public records",
+    ],
+    "other_or_unclassified": [],
 }
 
-# General search/feed discovery terms for sources that accept query parameters.
-# These are seeds to discover signals, not pre-approved opportunities.
-DEFAULT_SEARCH_TERMS = [
-    '"looking for a tool" workflow',
-    '"manual process" automation business',
-    '"alternative to" spreadsheet workflow',
-    '"data conversion" repetitive task',
-    '"formatting issue" document tool',
-    '"too expensive" software workflow',
-    '"missing feature" automation tool',
-    '"need a solution" data processing',
+# These signals indicate a task or friction, not necessarily a paying customer.
+DEMAND_TERMS = [
+    "need help", "looking for", "can someone", "anyone know",
+    "how do i", "how can i", "recommend a tool", "is there a tool",
+    "need a way", "trying to", "want to automate", "help me",
+    "looking for someone", "looking for a tool", "hire someone",
 ]
 
+PAIN_TERMS = [
+    "problem", "issue", "broken", "fails", "failed", "error",
+    "frustrating", "painful", "difficult", "hard to", "can't",
+    "cannot", "unable to", "doesn't work", "does not work",
+    "time-consuming", "tedious", "repetitive", "manual",
+    "workaround", "inaccurate", "unreliable", "missing feature",
+    "poor results", "bad output", "waste of time", "too complex",
+]
 
-@dataclass
-class Finding:
-    title: str
-    url: str
-    source: str
-    summary: str = ""
-    published_at: str | None = None
-    discovered_at: str = ""
-    category: str = "unclassified"
-    evidence_type: str = "public_source_record"
-    source_verified: bool = False
-    evidence_notes: list[str] = field(default_factory=list)
-    score: float = 0.0
-    finding_id: str = ""
-    status: str = "unverified"
-    metadata: dict[str, Any] = field(default_factory=dict)
+WORKAROUND_TERMS = [
+    "manually", "copy and paste", "spreadsheet workaround",
+    "work around", "workaround", "every week", "every day",
+    "each month", "over and over", "repeat this", "multiple tools",
+    "switch between", "export then import", "doing this by hand",
+]
 
-    def prepare(self) -> "Finding":
-        self.title = clean_text(self.title)[:500]
-        self.summary = clean_text(self.summary)[:4000]
-        self.url = normalize_url(self.url)
-        self.source = clean_text(self.source)[:300]
-        self.discovered_at = self.discovered_at or utc_now()
+COMMERCIAL_TERMS = [
+    "paid", "payment", "budget", "price", "pricing", "cost",
+    "hire", "hiring", "freelancer", "contract", "contractor",
+    "client", "customer", "order", "project", "fixed price",
+    "per task", "per month", "subscription", "invoice",
+    "job posting", "gig", "service listing",
+]
 
-        if not self.finding_id:
-            identity = self.url or (
-                self.title.lower() + "|" + self.source.lower()
-            )
-            self.finding_id = hashlib.sha256(
-                identity.encode("utf-8")
-            ).hexdigest()[:32]
+PAYMENT_EVIDENCE_TERMS = [
+    "paid for", "we paid", "payment received", "completed order",
+    "paid order", "purchased", "purchase confirmed",
+    "contract awarded", "invoice paid",
+]
 
-        self.category = classify_text(
-            self.title + " " + self.summary
-        )
-        self.score = score_finding(self)
-        return self
+SELLER_TERMS = [
+    "i offer", "we offer", "my service", "our service",
+    "freelance service", "available for hire", "service listing",
+    "fixed-price service", "fixed price", "gig",
+]
 
+FAILED_WORKFLOW_TERMS = [
+    "doesn't work", "does not work", "failed", "failure",
+    "broken", "incorrect output", "wrong output", "bad preview",
+    "poor preview", "rejected", "unresolved", "still not working",
+]
 
-@dataclass
-class SourceResult:
-    source: str
-    status: str
-    fetched: int = 0
-    stored: int = 0
-    duplicates: int = 0
-    error: str | None = None
-    elapsed_seconds: float = 0.0
+# Relevance searches are deliberately broad and are not proof of demand.
+HACKER_NEWS_QUERIES = [
+    '"need help" automation',
+    '"manual" workflow tool',
+    '"looking for" tool repetitive',
+    '"does not work" integration',
+    '"time-consuming" spreadsheet',
+    '"alternative to" workflow',
+    '"how do I" data cleaning',
+    '"frustrating" API',
+]
+
+STACKEXCHANGE_SITES = [
+    "stackoverflow",
+    "webapps",
+    "superuser",
+    "serverfault",
+    "wordpress",
+]
+
+GITHUB_QUERIES = [
+    '"bug" "workflow" is:issue is:open',
+    '"feature request" automation is:issue is:open',
+    '"does not work" integration is:issue is:open',
+    '"incorrect output" is:issue is:open',
+]
+
+# Default weights for transparent discovery prioritization.
+DISCOVERY_WEIGHTS = {
+    "task_clarity": 20,
+    "pain_signal": 15,
+    "recurrence_signal": 15,
+    "commercial_signal": 15,
+    "workaround_signal": 10,
+    "failure_signal": 10,
+    "freshness": 10,
+    "source_completeness": 5,
+}
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def parse_bool(value: Any) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def clean_text(value: Any) -> str:
-    if value is None:
-        return ""
-    value = html.unescape(str(value))
-    value = re.sub(r"<[^>]*>", " ", value)
-    return re.sub(r"\s+", " ", value).strip()
+    value = html.unescape(str(value or ""))
+    value = re.sub(r"<[^>]+>", " ", value)
+    value = re.sub(r"\s+", " ", value)
+    return value.strip()
 
 
-def normalize_url(url: str) -> str:
-    """Normalize a URL without changing its destination."""
-    url = html.unescape((url or "").strip())
-    if not url:
-        return ""
-
-    try:
-        parts = urllib.parse.urlsplit(url)
-        if parts.scheme.lower() not in ("http", "https"):
-            return ""
-        if not parts.hostname:
-            return ""
-
-        host = parts.hostname.lower()
-        if parts.port:
-            default_port = (
-                parts.scheme.lower() == "http" and parts.port == 80
-            ) or (
-                parts.scheme.lower() == "https" and parts.port == 443
-            )
-            if not default_port:
-                host = f"{host}:{parts.port}"
-
-        # Remove common tracking parameters only.
-        query_items = urllib.parse.parse_qsl(
-            parts.query, keep_blank_values=True
-        )
-        query_items = [
-            (k, v) for k, v in query_items
-            if not k.lower().startswith("utm_")
-            and k.lower() not in {
-                "fbclid", "gclid", "mc_cid", "mc_eid"
-            }
-        ]
-        query = urllib.parse.urlencode(query_items, doseq=True)
-        path = parts.path or "/"
-
-        return urllib.parse.urlunsplit((
-            parts.scheme.lower(), host, path, query, ""
-        ))
-    except (ValueError, UnicodeError):
-        return ""
-
-
-def classify_text(text: str) -> str:
-    text = text.lower()
-    category_hits: dict[str, int] = {}
-
-    for category, terms in DEFAULT_THEMES.items():
-        category_hits[category] = sum(
-            1 for term in terms if term in text
-        )
-
-    best = max(category_hits, key=category_hits.get)
-    return best if category_hits[best] else "unclassified"
-
-
-def score_finding(finding: Finding) -> float:
-    """
-    Heuristic relevance score from 0 to 100.
-
-    This is NOT a probability of demand, willingness to pay, or success.
-    The score prioritizes records for review only.
-    """
-    text = (finding.title + " " + finding.summary).lower()
-    score = 0.0
-
-    category_bonus = {
-        "commercial_intent": 25,
-        "workflow_friction": 20,
-        "quality_and_reliability": 18,
-        "document_and_data_tasks": 17,
-        "access_and_complexity": 15,
-        "unclassified": 0,
-    }
-    score += category_bonus.get(finding.category, 0)
-
-    explicit_need_terms = (
-        "looking for", "need a", "recommend", "alternative to",
-        "problem with", "can't", "cannot", "failed", "manual",
-        "workaround", "too expensive",
-    )
-    score += min(
-        25, sum(5 for term in explicit_need_terms if term in text)
-    )
-
-    repeat_terms = (
-        "every day", "daily", "weekly", "recurring", "repeated",
-        "every month", "batch", "multiple files",
-    )
-    score += min(
-        15, sum(5 for term in repeat_terms if term in text)
-    )
-
-    task_terms = (
-        "convert", "extract", "format", "clean", "merge",
-        "validate", "generate", "compare", "automate",
-    )
-    score += min(
-        15, sum(3 for term in task_terms if term in text)
-    )
-
-    if finding.url:
-        score += 5
-    if finding.source_verified:
-        score += 5
-
-    return round(min(100.0, score), 2)
-
-
-def open_database(path: Path = DATABASE_PATH) -> sqlite3.Connection:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), timeout=20)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    create_schema(conn)
-    return conn
-
-
-def create_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript("""
-    CREATE TABLE IF NOT EXISTS findings (
-        finding_id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        url TEXT NOT NULL,
-        source TEXT NOT NULL,
-        summary TEXT NOT NULL DEFAULT '',
-        published_at TEXT,
-        discovered_at TEXT NOT NULL,
-        category TEXT NOT NULL,
-        evidence_type TEXT NOT NULL,
-        source_verified INTEGER NOT NULL DEFAULT 0,
-        evidence_notes_json TEXT NOT NULL DEFAULT '[]',
-        score REAL NOT NULL DEFAULT 0,
-        status TEXT NOT NULL DEFAULT 'unverified',
-        metadata_json TEXT NOT NULL DEFAULT '{}',
-        first_seen_at TEXT NOT NULL,
-        last_seen_at TEXT NOT NULL,
-        seen_count INTEGER NOT NULL DEFAULT 1
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_findings_score
-        ON findings(score DESC);
-    CREATE INDEX IF NOT EXISTS idx_findings_category
-        ON findings(category);
-    CREATE INDEX IF NOT EXISTS idx_findings_status
-        ON findings(status);
-    CREATE INDEX IF NOT EXISTS idx_findings_last_seen
-        ON findings(last_seen_at DESC);
-
-    CREATE TABLE IF NOT EXISTS scan_runs (
-        run_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        started_at TEXT NOT NULL,
-        finished_at TEXT,
-        status TEXT NOT NULL,
-        sources_attempted INTEGER NOT NULL DEFAULT 0,
-        records_fetched INTEGER NOT NULL DEFAULT 0,
-        records_inserted INTEGER NOT NULL DEFAULT 0,
-        duplicates INTEGER NOT NULL DEFAULT 0,
-        errors INTEGER NOT NULL DEFAULT 0,
-        report_json TEXT NOT NULL DEFAULT '{}'
-    );
-
-    CREATE TABLE IF NOT EXISTS source_health (
-        source TEXT PRIMARY KEY,
-        last_attempt_at TEXT,
-        last_success_at TEXT,
-        last_status TEXT,
-        consecutive_failures INTEGER NOT NULL DEFAULT 0,
-        total_attempts INTEGER NOT NULL DEFAULT 0,
-        total_successes INTEGER NOT NULL DEFAULT 0,
-        last_error TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS finding_outcomes (
-        outcome_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        finding_id TEXT NOT NULL,
-        outcome TEXT NOT NULL,
-        notes TEXT NOT NULL DEFAULT '',
-        recorded_at TEXT NOT NULL,
-        FOREIGN KEY(finding_id) REFERENCES findings(finding_id)
-    );
-    """)
-    conn.commit()
-
-
-def fetch_url(url: str) -> tuple[bytes, str]:
-    """
-    Fetch a public HTTP(S) resource with bounded time and response size.
-
-    Redirects are limited by urllib defaults. The final URL must still be
-    HTTP(S); the scanner never executes downloaded content.
-    """
-    url = normalize_url(url)
-    if not url:
-        raise ValueError("Invalid HTTP(S) URL")
-
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": USER_AGENT,
-            "Accept": (
-                "application/rss+xml, application/atom+xml, "
-                "application/json, application/xml, text/xml, "
-                "text/plain, */*"
-            ),
-        },
-        method="GET",
-    )
-
-    with urllib.request.urlopen(
-        request, timeout=REQUEST_TIMEOUT
-    ) as response:
-        final_url = normalize_url(response.geturl())
-        if not final_url:
-            raise ValueError("Redirect resolved to an invalid URL")
-
-        data = response.read(MAX_RESPONSE_BYTES + 1)
-        if len(data) > MAX_RESPONSE_BYTES:
-            raise ValueError("Response exceeded configured byte limit")
-
-        return data, final_url
-
-
-def parse_datetime(value: str | None) -> str | None:
+def normalize_date(value: Any) -> Optional[str]:
     if not value:
         return None
-    value = value.strip()
-
     try:
-        parsed = datetime.fromisoformat(
-            value.replace("Z", "+00:00")
-        )
+        raw = str(value).strip()
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        parsed = dt.datetime.fromisoformat(raw)
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc).isoformat()
-    except ValueError:
-        pass
-
-    try:
-        parsed = parsedate_to_datetime(value)
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc).isoformat()
-    except (TypeError, ValueError, OverflowError):
+            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        return parsed.astimezone(dt.timezone.utc).isoformat()
+    except (ValueError, TypeError, OverflowError):
         return None
 
 
-def parse_feed(data: bytes, feed_url: str) -> list[Finding]:
-    """Parse common RSS 2.0 and Atom feed structures."""
+def age_days(date_string: Optional[str]) -> Optional[float]:
+    parsed = normalize_date(date_string)
+    if not parsed:
+        return None
+    try:
+        value = dt.datetime.fromisoformat(parsed)
+        return max(0.0, (dt.datetime.now(dt.timezone.utc) - value).total_seconds() / 86400)
+    except ValueError:
+        return None
+
+
+def matching_terms(text: str, terms: list[str]) -> list[str]:
+    lowered = text.lower()
+    return [term for term in terms if term.lower() in lowered]
+
+
+def stable_id(source: str, url: str, title: str) -> str:
+    identity = (source + "|" + (url or "") + "|" + (title or "")).encode("utf-8")
+    return hashlib.sha256(identity).hexdigest()[:32]
+
+
+def connect_db() -> sqlite3.Connection:
+    if DEFAULT_DB_PATH != ":memory:":
+        parent = os.path.dirname(os.path.abspath(DEFAULT_DB_PATH))
+        os.makedirs(parent, exist_ok=True)
+    connection = sqlite3.connect(DEFAULT_DB_PATH, timeout=30)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA busy_timeout=30000")
+    return connection
+
+
+def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
+    rows = connection.execute(f"PRAGMA table_info({table})").fetchall()
+    return {row["name"] for row in rows}
+
+
+def _ensure_columns(
+    connection: sqlite3.Connection,
+    table: str,
+    definitions: dict[str, str],
+) -> None:
+    present = _columns(connection, table)
+    for name, definition in definitions.items():
+        if name not in present:
+            connection.execute(
+                f'ALTER TABLE "{table}" ADD COLUMN "{name}" {definition}'
+            )
+
+
+def init_db() -> None:
+    with connect_db() as connection:
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS findings (
+                id TEXT PRIMARY KEY,
+                source TEXT,
+                source_id TEXT,
+                url TEXT,
+                title TEXT,
+                text TEXT,
+                domain TEXT,
+                score INTEGER DEFAULT 0,
+                commercial_intent TEXT,
+                created_at TEXT,
+                discovered_at TEXT,
+                raw_json TEXT
+            )
+        """)
+        # Migrate older scanner tables without dropping existing data.
+        _ensure_columns(connection, "findings", {
+            "id": "TEXT",
+            "source": "TEXT",
+            "source_id": "TEXT",
+            "url": "TEXT",
+            "title": "TEXT",
+            "text": "TEXT",
+            "domain": "TEXT",
+            "score": "INTEGER DEFAULT 0",
+            "commercial_intent": "TEXT",
+            "created_at": "TEXT",
+            "discovered_at": "TEXT",
+            "raw_json": "TEXT",
+            "discovery_score": "INTEGER DEFAULT 0",
+            "value_to_money_score": "INTEGER",
+            "value_status": "TEXT",
+            "evidence_json": "TEXT",
+            "signals_json": "TEXT",
+        })
+        connection.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_findings_id
+            ON findings(id)
+        """)
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_findings_discovery
+            ON findings(discovery_score)
+        """)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS source_health (
+                source TEXT PRIMARY KEY,
+                last_checked TEXT,
+                status TEXT,
+                item_count INTEGER DEFAULT 0,
+                error TEXT
+            )
+        """)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS scan_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                started_at TEXT,
+                finished_at TEXT,
+                status TEXT,
+                item_count INTEGER DEFAULT 0,
+                source_count INTEGER DEFAULT 0,
+                error TEXT,
+                summary_json TEXT
+            )
+        """)
+        _ensure_columns(connection, "scan_runs", {
+            "started_at": "TEXT",
+            "finished_at": "TEXT",
+            "status": "TEXT",
+            "item_count": "INTEGER DEFAULT 0",
+            "source_count": "INTEGER DEFAULT 0",
+            "error": "TEXT",
+            "summary_json": "TEXT",
+        })
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS finding_outcomes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                finding_id TEXT,
+                outcome TEXT,
+                notes TEXT,
+                created_at TEXT
+            )
+        """)
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_outcomes_finding
+            ON finding_outcomes(finding_id)
+        """)
+
+
+def fetch_url(
+    url: str,
+    headers: Optional[dict[str, str]] = None,
+) -> bytes:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https":
+        raise ValueError("Only HTTPS sources are allowed")
+    request_headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "application/json, application/atom+xml, application/rss+xml, application/xml, text/xml, */*",
+    }
+    if headers:
+        request_headers.update(headers)
+    request = urllib.request.Request(url, headers=request_headers)
+    with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
+        return response.read(5_000_000)
+
+
+def make_item(
+    source: str,
+    title: str,
+    text: str,
+    url: str,
+    created_at: Optional[str] = None,
+    source_id: Optional[str] = None,
+    raw: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    title = clean_text(title)[:500]
+    text = clean_text(text)[:12000]
+    url = str(url or "").strip()
+    return {
+        "id": stable_id(source, url, title),
+        "source": source,
+        "source_id": str(source_id or ""),
+        "url": url,
+        "title": title,
+        "text": text,
+        "created_at": normalize_date(created_at),
+        "raw": raw or {},
+    }
+
+
+def parse_feed(data: bytes, source: str) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
     try:
         root = ET.fromstring(data)
-    except ET.ParseError as exc:
-        raise ValueError(f"Feed XML parse failed: {exc}") from exc
+    except ET.ParseError:
+        # Some public endpoints provide JSON despite a feed-like URL.
+        try:
+            payload = json.loads(data.decode("utf-8", errors="replace"))
+            entries = payload if isinstance(payload, list) else payload.get("items", [])
+            for entry in entries[:MAX_ITEMS]:
+                if not isinstance(entry, dict):
+                    continue
+                items.append(make_item(
+                    source=source,
+                    title=entry.get("title", ""),
+                    text=entry.get("summary", entry.get("description", entry.get("content", ""))),
+                    url=entry.get("url", entry.get("link", "")),
+                    created_at=entry.get("published", entry.get("date", entry.get("published_at"))),
+                    source_id=entry.get("id"),
+                    raw=entry,
+                ))
+        except (ValueError, TypeError, AttributeError):
+            return []
+        return items
 
-    results: list[Finding] = []
-    root_tag = root.tag.rsplit("}", 1)[-1].lower()
-
-    if root_tag == "rss" or root_tag == "rdf":
-        items = [
-            node for node in root.iter()
-            if node.tag.rsplit("}", 1)[-1].lower() == "item"
-        ]
-        for item in items[:MAX_ITEMS_PER_SOURCE]:
-            fields: dict[str, str] = {}
-            for child in list(item):
-                key = child.tag.rsplit("}", 1)[-1].lower()
-                fields.setdefault(key, "".join(child.itertext()).strip())
-
-            link = fields.get("link", "")
-            if not link:
-                continue
-            results.append(Finding(
-                title=fields.get("title", "Untitled feed item"),
-                url=urllib.parse.urljoin(feed_url, link),
-                source=feed_url,
-                summary=(
-                    fields.get("description")
-                    or fields.get("summary")
-                    or fields.get("content", "")
-                ),
-                published_at=parse_datetime(
-                    fields.get("pubdate")
-                    or fields.get("published")
-                    or fields.get("date")
-                ),
-                source_verified=True,
-                evidence_notes=["Retrieved from a public RSS/RDF feed"],
-            ))
-
-    else:
-        ns = {"atom": "http://www.w3.org/2005/Atom"}
-        entries = root.findall(".//atom:entry", ns)
-
-        # Fallback for Atom documents with alternate namespaces.
-        if not entries:
-            entries = [
-                node for node in root.iter()
-                if node.tag.rsplit("}", 1)[-1].lower() == "entry"
-            ]
-
-        for entry in entries[:MAX_ITEMS_PER_SOURCE]:
-            fields: dict[str, str] = {}
-            for child in list(entry):
-                key = child.tag.rsplit("}", 1)[-1].lower()
-                fields.setdefault(key, "".join(child.itertext()).strip())
-
-            link = ""
-            for child in list(entry):
-                if child.tag.rsplit("}", 1)[-1].lower() == "link":
-                    href = child.attrib.get("href", "")
-                    rel = child.attrib.get("rel", "alternate")
-                    if href and rel == "alternate":
-                        link = href
-                        break
-                    if href and not link:
-                        link = href
-
-            if not link:
-                continue
-
-            results.append(Finding(
-                title=fields.get("title", "Untitled feed entry"),
-                url=urllib.parse.urljoin(feed_url, link),
-                source=feed_url,
-                summary=fields.get("summary", fields.get("content", "")),
-                published_at=parse_datetime(
-                    fields.get("published")
-                    or fields.get("updated")
-                ),
-                source_verified=True,
-                evidence_notes=["Retrieved from a public Atom feed"],
-            ))
-
-    return results
-
-
-def parse_json_feed(data: bytes, feed_url: str) -> list[Finding]:
-    """Parse a small generic JSON feed when its schema is recognizable."""
-    try:
-        payload = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"JSON parse failed: {exc}") from exc
-
-    if isinstance(payload, list):
-        items = payload
-    elif isinstance(payload, dict):
-        items = None
-        for key in ("items", "results", "entries", "data", "records"):
-            if isinstance(payload.get(key), list):
-                items = payload[key]
-                break
-        if items is None:
-            raise ValueError("JSON response has no recognized item list")
-    else:
-        raise ValueError("Unsupported JSON feed shape")
-
-    results: list[Finding] = []
-    for item in items[:MAX_ITEMS_PER_SOURCE]:
-        if not isinstance(item, dict):
+    for node in root.iter():
+        tag = node.tag.lower().split("}")[-1]
+        if tag not in {"item", "entry"}:
             continue
 
-        title = (
-            item.get("title") or item.get("name")
-            or item.get("headline") or ""
+        fields: dict[str, str] = {}
+        links: list[str] = []
+        for child in list(node):
+            child_tag = child.tag.lower().split("}")[-1]
+            if child_tag == "link":
+                href = child.attrib.get("href")
+                if href:
+                    links.append(href)
+                elif child.text:
+                    links.append(child.text.strip())
+            elif child.text:
+                fields[child_tag] = child.text.strip()
+
+        title = fields.get("title", "")
+        description = (
+            fields.get("description")
+            or fields.get("summary")
+            or fields.get("content")
+            or fields.get("encoded")
+            or ""
         )
-        raw_url = (
-            item.get("url") or item.get("link")
-            or item.get("html_url") or item.get("web_url") or ""
+        link = links[0] if links else fields.get("link", "")
+        created = (
+            fields.get("published")
+            or fields.get("updated")
+            or fields.get("pubdate")
+            or fields.get("date")
         )
-        if not title or not raw_url:
-            continue
-
-        results.append(Finding(
-            title=str(title),
-            url=urllib.parse.urljoin(feed_url, str(raw_url)),
-            source=feed_url,
-            summary=str(
-                item.get("summary") or item.get("description")
-                or item.get("body") or item.get("content") or ""
-            ),
-            published_at=parse_datetime(
-                str(item.get("published_at") or item.get("date") or "")
-            ),
-            source_verified=True,
-            evidence_notes=["Retrieved from a configured public JSON feed"],
-        ))
-
-    return results
+        if title or description:
+            items.append(make_item(
+                source, title, description, link, created,
+                fields.get("id") or fields.get("guid"),
+                {"feed_fields": fields},
+            ))
+        if len(items) >= MAX_ITEMS:
+            break
+    return items
 
 
-def configured_sources() -> list[str]:
-    """Return unique configured feed URLs in stable order."""
-    seen: set[str] = set()
-    sources: list[str] = []
-
-    for url in CONFIGURED_FEEDS:
-        normalized = normalize_url(url)
-        if normalized and normalized not in seen:
-            seen.add(normalized)
-            sources.append(normalized)
-
-    return sources[:MAX_SOURCES_PER_RUN]
-
-
-def save_finding(
-    conn: sqlite3.Connection, finding: Finding
-) -> tuple[bool, bool]:
-    """
-    Persist a finding.
-
-    Returns (inserted, duplicate).
-    Duplicate observations update last_seen_at and seen_count.
-    """
-    finding.prepare()
-    if not finding.url or not finding.title:
-        return False, False
-
-    now = utc_now()
-    existing = conn.execute(
-        "SELECT finding_id FROM findings WHERE finding_id = ?",
-        (finding.finding_id,),
-    ).fetchone()
-
-    if existing:
-        conn.execute("""
-            UPDATE findings
-            SET last_seen_at = ?, seen_count = seen_count + 1,
-                score = MAX(score, ?),
-                source_verified = MAX(source_verified, ?)
-            WHERE finding_id = ?
-        """, (
-            now, finding.score, int(finding.source_verified),
-            finding.finding_id,
-        ))
-        return False, True
-
-    conn.execute("""
-        INSERT INTO findings (
-            finding_id, title, url, source, summary, published_at,
-            discovered_at, category, evidence_type, source_verified,
-            evidence_notes_json, score, status, metadata_json,
-            first_seen_at, last_seen_at, seen_count
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-    """, (
-        finding.finding_id,
-        finding.title,
-        finding.url,
-        finding.source,
-        finding.summary,
-        finding.published_at,
-        finding.discovered_at,
-        finding.category,
-        finding.evidence_type,
-        int(finding.source_verified),
-        json.dumps(finding.evidence_notes, ensure_ascii=False),
-        finding.score,
-        finding.status,
-        json.dumps(finding.metadata, ensure_ascii=False),
-        now,
-        now,
-    ))
-    return True, False
+def collect_configured_feeds() -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    all_items: list[dict[str, Any]] = []
+    health: dict[str, dict[str, Any]] = {}
+    urls = [
+        u.strip() for u in os.getenv("SCANNER_FEED_URLS", "").split(";")
+        if u.strip()
+    ]
+    for url in urls:
+        source = "feed:" + urllib.parse.urlparse(url).netloc
+        try:
+            data = fetch_url(url)
+            items = parse_feed(data, source)
+            all_items.extend(items)
+            health[source] = {"status": "ok", "count": len(items), "error": None}
+        except Exception as exc:
+            health[source] = {"status": "error", "count": 0, "error": str(exc)[:500]}
+    return all_items, health
 
 
-def update_source_health(
-    conn: sqlite3.Connection,
-    source: str,
-    success: bool,
-    error: str | None = None,
-) -> None:
-    now = utc_now()
-    conn.execute("""
-        INSERT INTO source_health (
-            source, last_attempt_at, last_success_at, last_status,
-            consecutive_failures, total_attempts, total_successes,
-            last_error
-        ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
-        ON CONFLICT(source) DO UPDATE SET
-            last_attempt_at = excluded.last_attempt_at,
-            last_success_at = CASE
-                WHEN excluded.last_status = 'success'
-                THEN excluded.last_success_at
-                ELSE source_health.last_success_at
-            END,
-            last_status = excluded.last_status,
-            consecutive_failures = CASE
-                WHEN excluded.last_status = 'success' THEN 0
-                ELSE source_health.consecutive_failures + 1
-            END,
-            total_attempts = source_health.total_attempts + 1,
-            total_successes = source_health.total_successes
-                + excluded.total_successes,
-            last_error = excluded.last_error
-    """, (
-        source, now, now if success else None,
-        "success" if success else "error",
-        0 if success else 1,
-        1 if success else 0,
-        (error or "")[:1000] if not success else None,
-    ))
+def collect_hacker_news() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    errors = []
+    for query in HACKER_NEWS_QUERIES:
+        url = "https://hn.algolia.com/api/v1/search?" + urllib.parse.urlencode({
+            "query": query,
+            "tags": "story,comment",
+            "hitsPerPage": min(MAX_ITEMS, 25),
+        })
+        try:
+            payload = json.loads(fetch_url(url).decode("utf-8"))
+            for hit in payload.get("hits", []):
+                title = hit.get("title") or hit.get("story_title") or ""
+                text = hit.get("comment_text") or hit.get("story_text") or title
+                object_id = hit.get("objectID", "")
+                item_url = hit.get("url") or (
+                    "https://news.ycombinator.com/item?id=" + str(object_id)
+                )
+                created = hit.get("created_at")
+                results.append(make_item(
+                    "hackernews", title, text, item_url, created,
+                    object_id, hit,
+                ))
+        except Exception as exc:
+            errors.append(str(exc)[:250])
+
+    unique = {item["id"]: item for item in results}
+    items = list(unique.values())[:MAX_ITEMS]
+    return items, {
+        "status": "ok" if items else ("error" if errors else "empty"),
+        "count": len(items),
+        "error": "; ".join(errors[:3]) or None,
+    }
 
 
-def scan_feed(source: str) -> tuple[list[Finding], str]:
-    data, final_url = fetch_url(source)
-    content_type = ""
+def collect_stack_exchange() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not ENABLE_STACKEXCHANGE:
+        return [], {"status": "disabled", "count": 0, "error": None}
 
-    # Prefer XML parsing first, then JSON.
-    try:
-        findings = parse_feed(data, final_url)
-        if findings:
-            return findings, final_url
-    except ValueError:
-        pass
+    results: list[dict[str, Any]] = []
+    errors = []
+    queries = ["automation", "spreadsheet", "api error", "data cleaning"]
+    for site in STACKEXCHANGE_SITES:
+        for query in queries:
+            url = "https://api.stackexchange.com/2.3/search/advanced?" + urllib.parse.urlencode({
+                "site": site,
+                "q": query,
+                "sort": "creation",
+                "order": "desc",
+                "pagesize": min(MAX_ITEMS, 20),
+                "filter": "withbody",
+            })
+            try:
+                payload = json.loads(fetch_url(url).decode("utf-8"))
+                for post in payload.get("items", []):
+                    results.append(make_item(
+                        "stackexchange:" + site,
+                        post.get("title", ""),
+                        post.get("body", ""),
+                        post.get("link", ""),
+                        dt.datetime.fromtimestamp(
+                            post.get("creation_date", 0),
+                            tz=dt.timezone.utc,
+                        ).isoformat() if post.get("creation_date") else None,
+                        post.get("question_id"),
+                        post,
+                    ))
+                time.sleep(0.15)
+            except Exception as exc:
+                errors.append(f"{site}/{query}: {str(exc)[:120]}")
 
-    try:
-        findings = parse_json_feed(data, final_url)
-        return findings, final_url
-    except ValueError as exc:
-        raise ValueError(
-            f"Source is not a supported RSS/Atom/JSON feed: {exc}"
-        ) from exc
+    unique = {item["id"]: item for item in results}
+    items = list(unique.values())[:MAX_ITEMS]
+    return items, {
+        "status": "ok" if items else ("error" if errors else "empty"),
+        "count": len(items),
+        "error": "; ".join(errors[:3]) or None,
+    }
 
 
-def run_scan(
-    sources: Iterable[str] | None = None,
-    db_path: Path = DATABASE_PATH,
+def collect_github_issues() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not ENABLE_GITHUB:
+        return [], {"status": "disabled", "count": 0, "error": None}
+
+    results: list[dict[str, Any]] = []
+    errors = []
+    for query in GITHUB_QUERIES:
+        url = "https://api.github.com/search/issues?" + urllib.parse.urlencode({
+            "q": query,
+            "sort": "created",
+            "order": "desc",
+            "per_page": min(MAX_ITEMS, 25),
+        })
+        try:
+            payload = json.loads(fetch_url(url).decode("utf-8"))
+            for issue in payload.get("items", []):
+                body = issue.get("body") or ""
+                labels = [
+                    label.get("name", "")
+                    for label in issue.get("labels", [])
+                    if isinstance(label, dict)
+                ]
+                results.append(make_item(
+                    "github",
+                    issue.get("title", ""),
+                    body + " Labels: " + ", ".join(labels),
+                    issue.get("html_url", ""),
+                    issue.get("created_at"),
+                    issue.get("id"),
+                    issue,
+                ))
+            time.sleep(0.2)
+        except Exception as exc:
+            errors.append(str(exc)[:250])
+
+    unique = {item["id"]: item for item in results}
+    items = list(unique.values())[:MAX_ITEMS]
+    return items, {
+        "status": "ok" if items else ("error" if errors else "empty"),
+        "count": len(items),
+        "error": "; ".join(errors[:3]) or None,
+    }
+
+
+def classify_domain(text: str) -> tuple[str, list[str]]:
+    lowered = text.lower()
+    matches: list[tuple[int, str, list[str]]] = []
+    for domain, terms in DOMAINS.items():
+        hits = matching_terms(lowered, terms)
+        if hits:
+            matches.append((len(hits), domain, hits))
+    if not matches:
+        return "other_or_unclassified", []
+    matches.sort(key=lambda row: (-row[0], row[1]))
+    return matches[0][1], matches[0][2]
+
+
+def commercial_intent(text: str) -> str:
+    lowered = text.lower()
+    commercial = matching_terms(lowered, COMMERCIAL_TERMS)
+    if matching_terms(lowered, PAYMENT_EVIDENCE_TERMS):
+        return "payment_language_unverified"
+    if commercial:
+        return "commercial_language_unverified"
+    if matching_terms(lowered, DEMAND_TERMS):
+        return "demand_language_unverified"
+    return "not_detected"
+
+
+def discovery_analysis(item: dict[str, Any]) -> dict[str, Any]:
+    title = clean_text(item.get("title", ""))
+    body = clean_text(item.get("text", ""))
+    combined = (title + " " + body).lower()
+    domain, domain_hits = classify_domain(combined)
+
+    demand = matching_terms(combined, DEMAND_TERMS)
+    pain = matching_terms(combined, PAIN_TERMS)
+    workaround = matching_terms(combined, WORKAROUND_TERMS)
+    commercial = matching_terms(combined, COMMERCIAL_TERMS)
+    payment_terms = matching_terms(combined, PAYMENT_EVIDENCE_TERMS)
+    seller = matching_terms(combined, SELLER_TERMS)
+    failure = matching_terms(combined, FAILED_WORKFLOW_TERMS)
+
+    recurrence_terms = [
+        "daily", "every day", "weekly", "every week", "monthly",
+        "every month", "recurring", "repeat", "repeatedly",
+        "bulk", "multiple times", "ongoing", "regularly",
+    ]
+    recurrence = matching_terms(combined, recurrence_terms)
+
+    age = age_days(item.get("created_at"))
+    freshness = 0
+    if age is not None:
+        if age <= 7:
+            freshness = 10
+        elif age <= 30:
+            freshness = 7
+        elif age <= 90:
+            freshness = 4
+        elif age <= 180:
+            freshness = 2
+
+    # Independent score components. Counts are capped to avoid keyword stuffing.
+    components = {
+        "task_clarity": min(20, 8 * bool(title) + 4 * bool(body) + 4 * bool(domain_hits) + 4 * bool(demand)),
+        "pain_signal": min(15, len(pain) * 5),
+        "recurrence_signal": min(15, len(recurrence) * 5),
+        "commercial_signal": min(15, len(commercial) * 5),
+        "workaround_signal": min(10, len(workaround) * 5),
+        "failure_signal": min(10, len(failure) * 5),
+        "freshness": freshness,
+        "source_completeness": 5 if item.get("url") and title and body else (
+            3 if item.get("url") and title else 0
+        ),
+    }
+
+    discovery_score = min(100, sum(components.values()))
+
+    evidence = {
+        "public_task_request_detected": bool(demand),
+        "pain_language_detected": bool(pain),
+        "recurrence_language_detected": bool(recurrence),
+        "commercial_language_detected": bool(commercial),
+        "payment_language_detected_unverified": bool(payment_terms),
+        "seller_language_detected_unverified": bool(seller),
+        "workflow_failure_detected": bool(failure),
+        "workaround_detected": bool(workaround),
+        "independent_buyers_verified": None,
+        "independent_sellers_verified": None,
+        "completed_payments_verified": None,
+        "exact_buyer_seller_task_alignment_verified": None,
+        "competitor_gap_verified": None,
+        "willingness_to_pay_verified": None,
+        "delivery_cost_verified": None,
+        "acquisition_cost_verified": None,
+    }
+
+    signals = {
+        "demand_terms": demand,
+        "pain_terms": pain,
+        "workaround_terms": workaround,
+        "commercial_terms": commercial,
+        "payment_terms_unverified": payment_terms,
+        "seller_terms_unverified": seller,
+        "failure_terms": failure,
+        "recurrence_terms": recurrence,
+        "domain_terms": domain_hits,
+        "components": components,
+    }
+
+    return {
+        "domain": domain,
+        "discovery_score": int(discovery_score),
+        "commercial_intent": commercial_intent(combined),
+        "evidence": evidence,
+        "signals": signals,
+    }
+
+
+def value_to_money_analysis(
+    analysis: dict[str, Any],
+    observed_data: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """
-    Run one bounded scan across configured sources.
+    Compute an evidence-aware opportunity score.
 
-    No fixed fake findings are inserted. If no feeds are configured,
-    the scanner reports that discovery has no sources rather than
-    pretending it found opportunities.
+    observed_data may contain independently verified, documented values:
+      payment_verified: bool
+      repeated_paid_demand_verified: bool
+      independent_buyers_verified: bool
+      independent_sellers_verified: bool
+      exact_task_alignment_verified: bool
+      competitor_gap_verified: bool
+      measurable_output_verified: bool
+      automation_feasibility_verified: bool
+      legal_data_access_verified: bool
+      acquisition_path_verified: bool
+      unit_economics_verified: bool
+      net_value_per_task: number
+      buyer_value_per_task: number
+      delivery_cost_per_task: number
+      acquisition_cost_per_customer: number
+
+    Scanner text alone cannot establish these facts. Do not populate
+    observed_data from keyword matches alone.
     """
-    started = utc_now()
-    started_clock = time.monotonic()
-    source_list = list(sources) if sources is not None else configured_sources()
+    data = observed_data or {}
+    evidence = dict(analysis.get("evidence", {}))
+    evidence.update({
+        key: data[key]
+        for key in data
+        if key in evidence
+    })
 
-    unique_sources: list[str] = []
-    seen: set[str] = set()
-    for source in source_list:
-        normalized = normalize_url(source)
-        if normalized and normalized not in seen:
-            seen.add(normalized)
-            unique_sources.append(normalized)
+    required_checks = [
+        "payment_verified",
+        "repeated_paid_demand_verified",
+        "independent_buyers_verified",
+        "independent_sellers_verified",
+        "exact_task_alignment_verified",
+        "competitor_gap_verified",
+        "measurable_output_verified",
+        "automation_feasibility_verified",
+        "legal_data_access_verified",
+        "acquisition_path_verified",
+        "unit_economics_verified",
+    ]
 
-    unique_sources = unique_sources[:MAX_SOURCES_PER_RUN]
+    # These fields must be independently reviewed, not inferred from text.
+    checks = {key: data.get(key) for key in required_checks}
+    verified_count = sum(value is True for value in checks.values())
+    unknown_count = sum(value is None for value in checks.values())
+    failed_count = sum(value is False for value in checks.values())
 
-    conn = open_database(db_path)
-    cursor = conn.execute("""
-        INSERT INTO scan_runs (started_at, status)
-        VALUES (?, 'running')
-    """, (started,))
-    run_id = cursor.lastrowid
-    conn.commit()
+    net_value = data.get("net_value_per_task")
+    buyer_value = data.get("buyer_value_per_task")
+    delivery_cost = data.get("delivery_cost_per_task")
+    acquisition_cost = data.get("acquisition_cost_per_customer")
 
-    source_reports: list[dict[str, Any]] = []
-    total_fetched = 0
-    total_inserted = 0
-    total_duplicates = 0
-    total_errors = 0
+    numeric_values_valid = all(
+        isinstance(value, (int, float)) and not isinstance(value, bool)
+        and value >= 0
+        for value in (buyer_value, delivery_cost, acquisition_cost)
+    )
 
-    try:
-        for source in unique_sources:
-            if time.monotonic() - started_clock >= MAX_RUN_SECONDS:
-                source_reports.append(asdict(SourceResult(
-                    source=source,
-                    status="skipped_run_time_limit",
-                )))
-                continue
+    if numeric_values_valid:
+        computed_net = float(buyer_value) - float(delivery_cost)
+        # Acquisition cost is per customer, not necessarily per task.
+        # Do not subtract it without a documented number of tasks per customer.
+        if net_value is None:
+            net_value = computed_net
 
-            source_start = time.monotonic()
-            try:
-                findings, resolved_source = scan_feed(source)
-                inserted = duplicates = 0
+    complete = all(value is True for value in checks.values())
+    if failed_count:
+        status = "BLOCKED_BY_FAILED_GATE"
+    elif complete and isinstance(net_value, (int, float)):
+        status = "EVIDENCE_REVIEW_REQUIRED"
+    else:
+        status = "INVESTIGATE"
 
-                for finding in findings[:MAX_ITEMS_PER_SOURCE]:
-                    # Keep the actual item URL but retain the feed as
-                    # the source of the observation.
-                    finding.source = resolved_source
-                    was_inserted, was_duplicate = save_finding(conn, finding)
-                    inserted += int(was_inserted)
-                    duplicates += int(was_duplicate)
+    # Never produce a value-to-money score from text-only evidence.
+    # A score is available only after all mandatory checks and net value
+    # have been independently supplied and reviewed.
+    score = None
+    if complete and isinstance(net_value, (int, float)):
+        # Net value must be positive; map the documented amount to 0–100.
+        # This is a transparent value scale, not a probability or ROI forecast.
+        score = max(0, min(100, round(100 * float(net_value) / (float(net_value) + 5))))
+        if float(net_value) <= 0:
+            score = 0
 
-                conn.commit()
-                update_source_health(conn, source, True)
-                conn.commit()
+    return {
+        "value_to_money_score": score,
+        "value_status": status,
+        "verified_gate_count": verified_count,
+        "unknown_gate_count": unknown_count,
+        "failed_gate_count": failed_count,
+        "gate_checks": checks,
+        "net_value_per_task": net_value,
+        "buyer_value_per_task": buyer_value,
+        "delivery_cost_per_task": delivery_cost,
+        "acquisition_cost_per_customer": acquisition_cost,
+        "notes": (
+            "The numeric score is a value scale, not a predicted probability "
+            "of success, sales, profit, or return on investment."
+        ),
+    }
 
-                result = SourceResult(
-                    source=source,
-                    status="success",
-                    fetched=len(findings),
-                    stored=inserted,
-                    duplicates=duplicates,
-                    elapsed_seconds=round(
-                        time.monotonic() - source_start, 3
-                    ),
-                )
 
-            except Exception as exc:
-                conn.rollback()
-                update_source_health(
-                    conn, source, False,
-                    f"{type(exc).__name__}: {exc}",
-                )
-                conn.commit()
-                total_errors += 1
+def record_source_health(
+    source: str,
+    status: str,
+    item_count: int = 0,
+    error: Optional[str] = None,
+) -> None:
+    with connect_db() as connection:
+        connection.execute("""
+            INSERT INTO source_health (source, last_checked, status, item_count, error)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(source) DO UPDATE SET
+                last_checked=excluded.last_checked,
+                status=excluded.status,
+                item_count=excluded.item_count,
+                error=excluded.error
+        """, (source, utc_now(), status, item_count, error))
 
-                result = SourceResult(
-                    source=source,
-                    status="error",
-                    error=f"{type(exc).__name__}: {exc}"[:1000],
-                    elapsed_seconds=round(
-                        time.monotonic() - source_start, 3
-                    ),
-                )
 
-            source_reports.append(asdict(result))
-            total_fetched += result.fetched
-            total_inserted += result.stored
-            total_duplicates += result.duplicates
+def save_finding(item: dict[str, Any]) -> None:
+    analysis = discovery_analysis(item)
+    value = value_to_money_analysis(analysis)
 
-        finished = utc_now()
-        status = (
-            "complete" if total_errors == 0
-            else "partial" if total_inserted or total_fetched
-            else "failed"
+    with connect_db() as connection:
+        columns = _columns(connection, "findings")
+        values = {
+            "id": item["id"],
+            "source": item.get("source"),
+            "source_id": item.get("source_id"),
+            "url": item.get("url"),
+            "title": item.get("title"),
+            "text": item.get("text"),
+            "domain": analysis["domain"],
+            "score": analysis["discovery_score"],
+            "commercial_intent": analysis["commercial_intent"],
+            "created_at": item.get("created_at"),
+            "discovered_at": utc_now(),
+            "raw_json": json.dumps(item.get("raw", {}), ensure_ascii=False)[:100000],
+            "discovery_score": analysis["discovery_score"],
+            "value_to_money_score": value["value_to_money_score"],
+            "value_status": value["value_status"],
+            "evidence_json": json.dumps(analysis["evidence"], ensure_ascii=False),
+            "signals_json": json.dumps(analysis["signals"], ensure_ascii=False),
+        }
+
+        available = [key for key in values if key in columns]
+        names = ", ".join('"' + key + '"' for key in available)
+        placeholders = ", ".join("?" for _ in available)
+        updates = ", ".join(
+            '"' + key + '"=excluded."' + key + '"'
+            for key in available if key != "id"
         )
 
-        report = {
-            "application": APP_NAME,
-            "version": SCANNER_VERSION,
+        connection.execute(
+            f"INSERT INTO findings ({names}) VALUES ({placeholders}) "
+            f"ON CONFLICT(id) DO UPDATE SET {updates}",
+            tuple(values[key] for key in available),
+        )
+
+
+def collect_all_sources() -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    all_items: list[dict[str, Any]] = []
+    health: dict[str, dict[str, Any]] = {}
+
+    collectors = [
+        ("configured_feeds", collect_configured_feeds),
+        ("hackernews", collect_hacker_news),
+        ("stackexchange", collect_stack_exchange),
+        ("github", collect_github_issues),
+    ]
+
+    for name, collector in collectors:
+        try:
+            items, info = collector()
+            all_items.extend(items)
+            health[name] = info
+        except Exception as exc:
+            health[name] = {
+                "status": "error",
+                "count": 0,
+                "error": str(exc)[:500],
+            }
+
+    unique = {item["id"]: item for item in all_items}
+    return list(unique.values()), health
+
+
+def run_scan() -> dict[str, Any]:
+    init_db()
+    started = utc_now()
+    started_clock = time.monotonic()
+
+    with connect_db() as connection:
+        cursor = connection.execute("""
+            INSERT INTO scan_runs (started_at, status, item_count, source_count)
+            VALUES (?, 'running', 0, 0)
+        """, (started,))
+        run_id = cursor.lastrowid
+
+    try:
+        items, health = collect_all_sources()
+        domain_counts: dict[str, int] = {}
+        saved_count = 0
+
+        for item in items:
+            analysis = discovery_analysis(item)
+            domain_counts[analysis["domain"]] = domain_counts.get(analysis["domain"], 0) + 1
+            save_finding(item)
+            saved_count += 1
+
+        for source, info in health.items():
+            record_source_health(
+                source,
+                info.get("status", "unknown"),
+                info.get("count", 0),
+                info.get("error"),
+            )
+
+        finished = utc_now()
+        summary = {
+            "version": VERSION,
+            "items_collected": len(items),
+            "findings_saved": saved_count,
+            "domains": domain_counts,
+            "sources": health,
+            "ranking": {
+                "discovery": "heuristic score 0-100",
+                "value_to_money": "evidence-gated; null until mandatory checks are verified",
+            },
+            "elapsed_seconds": round(time.monotonic() - started_clock, 2),
+        }
+
+        with connect_db() as connection:
+            connection.execute("""
+                UPDATE scan_runs
+                SET finished_at=?, status=?, item_count=?, source_count=?, summary_json=?
+                WHERE id=?
+            """, (
+                finished, "complete", saved_count, len(health),
+                json.dumps(summary, ensure_ascii=False), run_id,
+            ))
+
+        return {
+            "status": "complete",
             "run_id": run_id,
             "started_at": started,
             "finished_at": finished,
-            "status": status,
-            "sources_configured": len(unique_sources),
-            "records_fetched": total_fetched,
-            "new_findings": total_inserted,
-            "duplicates": total_duplicates,
-            "source_errors": total_errors,
-            "elapsed_seconds": round(
-                time.monotonic() - started_clock, 3
-            ),
-            "important_note": (
-                "A finding is a public-source observation, not proof "
-                "of buyer demand, willingness to pay, or revenue."
-            ),
-            "sources": source_reports,
-            "top_findings": top_findings(conn, limit=20),
+            **summary,
         }
 
-        conn.execute("""
-            UPDATE scan_runs SET
-                finished_at = ?, status = ?, sources_attempted = ?,
-                records_fetched = ?, records_inserted = ?,
-                duplicates = ?, errors = ?, report_json = ?
-            WHERE run_id = ?
-        """, (
-            finished, status, len(unique_sources),
-            total_fetched, total_inserted, total_duplicates,
-            total_errors, json.dumps(report, ensure_ascii=False),
-            run_id,
-        ))
-        conn.commit()
-        return report
+    except Exception as exc:
+        finished = utc_now()
+        with connect_db() as connection:
+            connection.execute("""
+                UPDATE scan_runs
+                SET finished_at=?, status=?, error=?
+                WHERE id=?
+            """, (finished, "error", str(exc)[:2000], run_id))
+        return {
+            "status": "error",
+            "run_id": run_id,
+            "started_at": started,
+            "finished_at": finished,
+            "error": str(exc)[:2000],
+        }
 
-    finally:
-        conn.close()
+
+def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    result = dict(row)
+    for field in ("evidence_json", "signals_json", "raw_json"):
+        raw = result.get(field)
+        if raw:
+            try:
+                result[field.removesuffix("_json")] = json.loads(raw)
+            except (ValueError, TypeError):
+                pass
+    return result
 
 
 def top_findings(
-    conn: sqlite3.Connection, limit: int = 20
+    limit: int = 20,
+    domain: Optional[str] = None,
+    ranking: str = "discovery",
 ) -> list[dict[str, Any]]:
-    rows = conn.execute("""
-        SELECT finding_id, title, url, source, summary, published_at,
-               discovered_at, category, source_verified, score, status,
-               first_seen_at, last_seen_at, seen_count
-        FROM findings
-        ORDER BY score DESC, last_seen_at DESC
-        LIMIT ?
-    """, (max(1, min(limit, 100)),)).fetchall()
+    init_db()
+    limit = max(1, min(200, int(limit)))
 
-    return [dict(row) for row in rows]
+    with connect_db() as connection:
+        columns = _columns(connection, "findings")
+        if ranking == "value_to_money" and "value_to_money_score" in columns:
+            order_by = "value_to_money_score DESC, discovery_score DESC"
+            where = "value_to_money_score IS NOT NULL"
+        else:
+            order_by = (
+                "COALESCE(discovery_score, score, 0) DESC, discovered_at DESC"
+            )
+            where = "1=1"
+
+        params: list[Any] = []
+        if domain:
+            where += " AND domain=?"
+            params.append(domain)
+        params.append(limit)
+
+        rows = connection.execute(
+            f"SELECT * FROM findings WHERE {where} ORDER BY {order_by} LIMIT ?",
+            params,
+        ).fetchall()
+        return [_row_to_dict(row) for row in rows]
+
+
+def scanner_status() -> dict[str, Any]:
+    init_db()
+    with connect_db() as connection:
+        findings_count = connection.execute(
+            "SELECT COUNT(*) FROM findings"
+        ).fetchone()[0]
+        runs_count = connection.execute(
+            "SELECT COUNT(*) FROM scan_runs"
+        ).fetchone()[0]
+        latest = connection.execute("""
+            SELECT started_at, finished_at, status, item_count, summary_json, error
+            FROM scan_runs ORDER BY id DESC LIMIT 1
+        """).fetchone()
+        health_rows = connection.execute("""
+            SELECT source, last_checked, status, item_count, error
+            FROM source_health ORDER BY source
+        """).fetchall()
+
+        value_count = 0
+        if "value_to_money_score" in _columns(connection, "findings"):
+            value_count = connection.execute("""
+                SELECT COUNT(*) FROM findings WHERE value_to_money_score IS NOT NULL
+            """).fetchone()[0]
+
+    latest_data = dict(latest) if latest else None
+    if latest_data and latest_data.get("summary_json"):
+        try:
+            latest_data["summary"] = json.loads(latest_data["summary_json"])
+        except ValueError:
+            pass
+
+    return {
+        "version": VERSION,
+        "database": DEFAULT_DB_PATH,
+        "domains": list(DOMAINS.keys()),
+        "findings_count": findings_count,
+        "scan_runs_count": runs_count,
+        "value_to_money_scored_count": value_count,
+        "latest_run": latest_data,
+        "sources": [dict(row) for row in health_rows],
+        "ranking_rules": {
+            "discovery_priority": "evidence signals + task clarity + freshness",
+            "value_to_money": "requires independent verification; not inferred from keywords",
+        },
+    }
 
 
 def record_outcome(
-    finding_id: str, outcome: str, notes: str = "",
-    db_path: Path = DATABASE_PATH,
-) -> bool:
-    """
-    Record a downstream outcome to support later learning.
-
-    Examples:
-        reviewed, rejected, validated, tool_built, task_completed,
-        buyer_confirmed, revenue_confirmed
-
-    This records what the caller says happened; it does not verify
-    the claim independently.
-    """
+    finding_id: str,
+    outcome: str,
+    notes: str = "",
+) -> dict[str, Any]:
     allowed = {
-        "reviewed", "rejected", "validated", "tool_built",
-        "task_completed", "buyer_confirmed", "revenue_confirmed",
-        "needs_more_evidence",
+        "useful", "not_useful", "validated_demand", "no_demand",
+        "verified_payment", "no_payment_evidence", "built", "rejected",
+        "unknown",
     }
     if outcome not in allowed:
-        raise ValueError(f"Unsupported outcome: {outcome}")
+        raise ValueError("Unsupported outcome. Allowed: " + ", ".join(sorted(allowed)))
 
-    conn = open_database(db_path)
-    try:
-        exists = conn.execute(
-            "SELECT 1 FROM findings WHERE finding_id = ?",
-            (finding_id,),
+    with connect_db() as connection:
+        exists = connection.execute(
+            "SELECT id FROM findings WHERE id=?", (finding_id,)
         ).fetchone()
         if not exists:
-            return False
+            raise ValueError("Finding not found")
 
-        conn.execute("""
-            INSERT INTO finding_outcomes (
-                finding_id, outcome, notes, recorded_at
-            ) VALUES (?, ?, ?, ?)
-        """, (finding_id, outcome, notes[:4000], utc_now()))
+        cursor = connection.execute("""
+            INSERT INTO finding_outcomes (finding_id, outcome, notes, created_at)
+            VALUES (?, ?, ?, ?)
+        """, (finding_id, outcome, str(notes or "")[:5000], utc_now()))
 
-        status = {
-            "rejected": "rejected",
-            "validated": "validated",
-            "needs_more_evidence": "unverified",
-            "buyer_confirmed": "buyer_confirmed",
-            "revenue_confirmed": "revenue_confirmed",
-        }.get(outcome)
-
-        if status:
-            conn.execute(
-                "UPDATE findings SET status = ? WHERE finding_id = ?",
-                (status, finding_id),
-            )
-
-        conn.commit()
-        return True
-    finally:
-        conn.close()
+    return {
+        "status": "recorded",
+        "outcome_id": cursor.lastrowid,
+        "finding_id": finding_id,
+        "outcome": outcome,
+    }
 
 
-def scanner_status(
-    db_path: Path = DATABASE_PATH,
-) -> dict[str, Any]:
-    conn = open_database(db_path)
-    try:
-        counts = conn.execute("""
-            SELECT COUNT(*) AS total,
-                   SUM(CASE WHEN status = 'unverified' THEN 1 ELSE 0 END)
-                       AS unverified,
-                   SUM(CASE WHEN status = 'validated' THEN 1 ELSE 0 END)
-                       AS validated,
-                   SUM(CASE WHEN status = 'buyer_confirmed' THEN 1 ELSE 0 END)
-                       AS buyer_confirmed,
-                   SUM(CASE WHEN status = 'revenue_confirmed' THEN 1 ELSE 0 END)
-                       AS revenue_confirmed
-            FROM findings
-        """).fetchone()
-
-        sources = conn.execute("""
-            SELECT source, last_attempt_at, last_success_at, last_status,
-                   consecutive_failures, total_attempts, total_successes,
-                   last_error
-            FROM source_health
-            ORDER BY source
-        """).fetchall()
-
-        last_run = conn.execute("""
-            SELECT run_id, started_at, finished_at, status,
-                   sources_attempted, records_fetched, records_inserted,
-                   duplicates, errors
-            FROM scan_runs ORDER BY run_id DESC LIMIT 1
-        """).fetchone()
-
-        return {
-            "application": APP_NAME,
-            "version": SCANNER_VERSION,
-            "database": str(db_path),
-            "finding_counts": dict(counts) if counts else {},
-            "source_health": [dict(row) for row in sources],
-            "last_run": dict(last_run) if last_run else None,
-        }
-    finally:
-        conn.close()
-
-
-def main() -> int:
+def main() -> None:
     import argparse
 
-    parser = argparse.ArgumentParser(
-        description="SolveEase modular public-source discovery scanner"
+    parser = argparse.ArgumentParser(description="SolveEase Micro-Utility Scanner")
+    sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("scan", help="Run discovery scan")
+    sub.add_parser("status", help="Show scanner status")
+
+    top_parser = sub.add_parser("top", help="List top findings")
+    top_parser.add_argument("--limit", type=int, default=20)
+    top_parser.add_argument("--domain", default=None)
+    top_parser.add_argument(
+        "--ranking",
+        choices=["discovery", "value_to_money"],
+        default="discovery",
     )
-    parser.add_argument(
-        "--db", default=str(DATABASE_PATH),
-        help="SQLite database path",
-    )
-    parser.add_argument(
-        "--source", action="append", default=[],
-        help="Feed URL to scan; repeat for multiple sources",
-    )
-    parser.add_argument(
-        "--status", action="store_true",
-        help="Print database and source health summary",
-    )
-    parser.add_argument(
-        "--json", action="store_true",
-        help="Print machine-readable JSON",
-    )
+
     args = parser.parse_args()
+    init_db()
 
-    db_path = Path(args.db)
-
-    if args.status:
-        result = scanner_status(db_path)
+    if args.command == "scan":
+        result = run_scan()
+    elif args.command == "status":
+        result = scanner_status()
+    elif args.command == "top":
+        result = {
+            "ranking": args.ranking,
+            "findings": top_findings(args.limit, args.domain, args.ranking),
+        }
     else:
-        chosen_sources = args.source or None
-        result = run_scan(chosen_sources, db_path)
+        result = {
+            "status": scanner_status(),
+            "top_findings": top_findings(10),
+        }
 
-    print(json.dumps(result, indent=2, ensure_ascii=False))
-    return 0 if result.get("status") not in {"failed"} else 1
+    print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
