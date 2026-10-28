@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: solveease-payment-verification
+    name: solveease-professional-engagement
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: python app.py
@@ -13,6 +13,6 @@ services:
       - key: DATABASE_PATH
         value: /var/data/service.sqlite3
     disk:
-      name: solveease-payment-verification-data
+      name: solveease-professional-engagement-data
       mountPath: /var/data
       sizeGB: 1

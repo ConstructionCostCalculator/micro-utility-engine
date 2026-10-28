@@ -2,7 +2,7 @@ import os,json,sqlite3,uuid,hmac
 from datetime import datetime,timezone
 from flask import Flask,request,jsonify
 import requests
-APP_NAME="Payment Verification"; VERSION="1.0.0"
+APP_NAME="Professional Engagement"; VERSION="1.0.0"
 DB=os.getenv("DATABASE_PATH","./data/service.sqlite3")
 TOKEN=os.getenv("API_TOKEN",""); NEXT=os.getenv("NEXT_STAGE_URL",""); NEXT_TOKEN=os.getenv("NEXT_STAGE_TOKEN","")
 app=Flask(__name__)
@@ -55,18 +55,24 @@ def get_record(rid):
  if not x:return jsonify(error="not_found"),404
  return jsonify(id=x["id"],status=x["status"],payload=json.loads(x["payload"]),created_at=x["created"],updated_at=x["updated"])
 
-def provider_verify(p):
- # Deliberately fail closed. Implement signed provider API lookup before production.
- return {"verified":False,"status":"UNVERIFIED","reason":"provider_specific_server_verification_not_configured"}
-@app.post("/payments/verify")
-def verify():
- p=request.get_json(silent=True) or {};amount=p.get("expected_amount")
- if not p.get("invoice_id") or not p.get("delivery_id") or not p.get("provider_reference") or not isinstance(amount,(int,float)) or amount<=0:return jsonify(error="invoice_delivery_reference_and_positive_amount_required"),400
- v=provider_verify(p);rid=str(p.get("payment_check_id") or uuid.uuid4())
- x={"payment_check_id":rid,"invoice_id":p["invoice_id"],"delivery_id":p["delivery_id"],"expected_amount":amount,"currency":str(p.get("currency","USD")).upper(),"provider_reference":p["provider_reference"],"verification":v,"status":"PAID_CONFIRMED" if v.get("verified") and v.get("status")=="PAID" else v["status"],"checked_at":now()}
- save(rid,x["status"],x);audit(rid,"payment_verification",{"status":x["status"]});return jsonify(x),200 if v["verified"] else 202
-@app.post("/payments/provider-webhook")
-def webhook():return jsonify(error="provider_signature_verification_not_configured",accepted=False),501
+def clean(x,n=4000):return str(x or "").strip()[:n]
+@app.post("/engagements")
+def create():
+ p=request.get_json(silent=True) or {};c=p.get("candidate");scope=clean(p.get("scope"));price=p.get("price_usd");deadline=clean(p.get("deadline"),100)
+ if not isinstance(c,dict) or c.get("status")!="QUALIFIED":return jsonify(error="qualified_candidate_required"),400
+ if not scope or not isinstance(price,(int,float)) or price<=0 or not deadline:return jsonify(error="scope_positive_price_deadline_required"),400
+ rid=str(p.get("engagement_id") or uuid.uuid4())
+ x={"engagement_id":rid,"candidate_id":c.get("candidate_id"),"scope":scope,"price_usd":price,"currency":"USD","deadline":deadline,"proposal_text":clean(p.get("proposal_text"),5000),"approval":{"approved":False},"status":"PROPOSAL_DRAFT","created_at":now()}
+ save(rid,x["status"],x);return jsonify(x),201
+@app.post("/engagements/<rid>/approval")
+def approval(rid):
+ p=request.get_json(silent=True) or {}
+ if p.get("approved") is not True or not clean(p.get("approved_by"),200) or not clean(p.get("approval_reference"),300):return jsonify(error="explicit_approval_identity_and_reference_required"),400
+ init_db()
+ with conn() as d:r=d.execute("SELECT payload FROM records WHERE id=?",(rid,)).fetchone()
+ if not r:return jsonify(error="not_found"),404
+ x=json.loads(r["payload"]);x["approval"]={"approved":True,"approved_by":clean(p["approved_by"],200),"approval_reference":clean(p["approval_reference"],300),"approved_at":now()};x["status"]="CLIENT_APPROVED"
+ save(rid,x["status"],x);audit(rid,"approval_recorded",x["approval"]);return jsonify(engagement=x,handoff=forward(x))
 
 if __name__=="__main__":
  init_db();app.run(host="0.0.0.0",port=int(os.getenv("PORT","10000")))

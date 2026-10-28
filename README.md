@@ -1,6 +1,6 @@
-# Payment Verification
+# Professional Engagement
 
-Payment verification intentionally defaults to UNVERIFIED. Implement provider-specific server-to-server verification and signed webhooks before production. Never trust screenshots or client-submitted paid status.
+Create proposal records only for qualified candidates. Client approval is a separate explicit action; provide the actual approval reference and approver identity. Never invent acceptance.
 
 ## Run locally
 `pip install -r requirements.txt` then `python app.py`. Set a strong `API_TOKEN` before exposing write endpoints. Set `DATABASE_PATH=/var/data/service.sqlite3` for a Render disk mounted at `/var/data`.
