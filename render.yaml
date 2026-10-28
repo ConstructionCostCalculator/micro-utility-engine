@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: solveease-approved-task-executor
+    name: solveease-global-utility-scanner
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: python app.py
@@ -13,6 +13,6 @@ services:
       - key: DATABASE_PATH
         value: /var/data/service.sqlite3
     disk:
-      name: solveease-approved-task-executor-data
+      name: solveease-global-utility-scanner-data
       mountPath: /var/data
       sizeGB: 1

@@ -2,7 +2,7 @@ import os,json,sqlite3,uuid,hmac
 from datetime import datetime,timezone
 from flask import Flask,request,jsonify
 import requests
-APP_NAME="Approved Task Executor"; VERSION="1.0.0"
+APP_NAME="Global Utility Scanner"; VERSION="1.0.0"
 DB=os.getenv("DATABASE_PATH","./data/service.sqlite3")
 TOKEN=os.getenv("API_TOKEN",""); NEXT=os.getenv("NEXT_STAGE_URL",""); NEXT_TOKEN=os.getenv("NEXT_STAGE_TOKEN","")
 app=Flask(__name__)
@@ -55,31 +55,66 @@ def get_record(rid):
  if not x:return jsonify(error="not_found"),404
  return jsonify(id=x["id"],status=x["status"],payload=json.loads(x["payload"]),created_at=x["created"],updated_at=x["updated"])
 
-def run_handler(p):
- typ=p.get("task_type");i=p.get("inputs",{})
- if typ=="text_cleanup":
-  s=str(i.get("text",""));out=" ".join(s.split());return {"result_text":out,"characters_in":len(s),"characters_out":len(out)}
- if typ=="json_validate":
-  try:return {"valid":True,"parsed":json.loads(i.get("json_text",""))}
-  except Exception as e:return {"valid":False,"error":str(e)}
- raise ValueError("task_type_not_allowlisted")
-@app.post("/tasks")
-def create():
- p=request.get_json(silent=True) or {};e=p.get("engagement")
- if not isinstance(e,dict) or e.get("status")!="CLIENT_APPROVED" or e.get("approval",{}).get("approved") is not True:return jsonify(error="client_approval_required"),403
- typ=p.get("task_type");i=p.get("inputs",{})
- if typ not in ("text_cleanup","json_validate") or not isinstance(i,dict):return jsonify(error="allowlisted_task_type_and_inputs_required"),400
- rid=str(p.get("task_id") or uuid.uuid4());x={"task_id":rid,"engagement_id":e.get("engagement_id"),"scope":e["scope"],"task_type":typ,"inputs":i,"attempts":0,"status":"QUEUED","created_at":now()}
- save(rid,"QUEUED",x);return jsonify(x),201
-@app.post("/tasks/<rid>/run")
-def run(rid):
+import re,hashlib,urllib.parse,xml.etree.ElementTree as ET
+KEYS={"ecommerce_online_selling":["shopify","woocommerce","product feed","catalog","sku","listing","inventory"],
+"seo":["seo","indexing","search console","schema markup","crawl error"],
+"business_operations":["spreadsheet","manual process","invoice","reconcile","copy paste"],
+"software_api":["api error","webhook","integration","bug","timeout","failed request"],
+"content_creator":["transcript","subtitle","caption","thumbnail"],
+"customer_service":["support ticket","refund","customer complaint","review"],
+"research":["public data","tender","grant","monitor prices"]}
+PAIN=["broken","frustrating","doesn't work","failed","error","bug","manual","tedious","missing","poor","unusable","wish"]
+REPEAT=["daily","weekly","monthly","every time","repeatedly","again","recurring","each week"]
+MONEY=["hire","freelancer","paid","budget","price","client","invoice","contract"]
+def score(text):
+ t=text.lower(); domains=[k for k,v in KEYS.items() if any(w in t for w in v)]
+ signals={"pain":sum(w in t for w in PAIN),"recurrence":sum(w in t for w in REPEAT),"commercial":sum(w in t for w in MONEY)}
+ return {"domains":domains or ["unclassified"],"signals":signals,"score":min(100,signals["pain"]*9+signals["recurrence"]*13+signals["commercial"]*10),"evidence_status":"discovery_only_not_demand_proof"}
+def collect(url,source):
+ r=requests.get(url,timeout=12,headers={"User-Agent":"SolveEaseResearchBot/1.0"});r.raise_for_status();data=r.json() if "json" in r.headers.get("content-type","") or r.text.lstrip().startswith("{") else None;out=[]
+ if source=="hn":
+  for x in data.get("hits",[]):out.append({"source":source,"url":x.get("url") or "https://news.ycombinator.com/item?id="+str(x.get("objectID","")),"title":x.get("title") or x.get("story_title") or "","text":(x.get("title") or "")+" "+(x.get("comment_text") or x.get("story_text") or "")})
+ elif source=="github":
+  for x in data.get("items",[]):out.append({"source":source,"url":x.get("html_url",""),"title":x.get("title",""),"text":x.get("title","")+" "+(x.get("body") or "")[:3000]})
+ else:
+  root=ET.fromstring(r.text)
+  for x in root.findall(".//item")[:30]:
+   out.append({"source":source,"url":x.findtext("link",""),"title":x.findtext("title",""),"text":x.findtext("title","")+" "+x.findtext("description","")})
+ return out
+def discover():
+ out=[];n=int(os.getenv("SCANNER_MAX_ITEMS","20"))
+ for q in [x.strip() for x in os.getenv("HN_QUERIES","broken workflow,manual spreadsheet,Shopify catalog error,SEO indexing problem").split(",") if x.strip()][:6]:
+  u="https://hn.algolia.com/api/v1/search_by_date?"+urllib.parse.urlencode({"query":q,"tags":"story,comment","hitsPerPage":n})
+  try:out+=collect(u,"hn")
+  except Exception as e:audit("scanner","source_error",{"url":u,"error":str(e)[:250]})
+ for q in [x.strip() for x in os.getenv("GITHUB_QUERIES","is:issue label:bug webhook,Shopify catalog,SEO indexing").split(",") if x.strip()][:5]:
+  u="https://api.github.com/search/issues?"+urllib.parse.urlencode({"q":q,"sort":"updated","per_page":n})
+  try:
+   h={"Accept":"application/vnd.github+json","User-Agent":"SolveEaseResearchBot/1.0"}
+   if os.getenv("GITHUB_TOKEN"):h["Authorization"]="Bearer "+os.getenv("GITHUB_TOKEN")
+   r=requests.get(u,headers=h,timeout=12);r.raise_for_status();data=r.json()
+   for x in data.get("items",[]):out.append({"source":"github","url":x.get("html_url",""),"title":x.get("title",""),"text":x.get("title","")+" "+(x.get("body") or "")[:3000]})
+  except Exception as e:audit("scanner","source_error",{"url":u,"error":str(e)[:250]})
+ seen=set();unique=[]
+ for x in out:
+  key=x.get("url") or hashlib.sha256(x.get("text","").encode()).hexdigest()
+  if key in seen:continue
+  seen.add(key);x["finding_id"]="f_"+hashlib.sha256(key.encode()).hexdigest()[:20];x.update(score(x.get("text","")));unique.append(x)
+ return unique
+def stage():
+ items=discover();init_db()
+ with conn() as d:
+  d.execute("CREATE TABLE IF NOT EXISTS scan_runs(id TEXT,at TEXT,count INTEGER)")
+  d.execute("INSERT INTO scan_runs VALUES(?,?,?)",(str(uuid.uuid4()),now(),len(items)))
+  for x in items:d.execute("INSERT INTO records VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,status=excluded.status,updated=excluded.updated",(x["finding_id"],"DISCOVERED",json.dumps(x),now(),now()))
+ return {"status":"complete","count":len(items),"findings":items[:100],"warning":"signals are not verified buyer demand"}
+@app.post("/scan")
+def scan():return jsonify(stage())
+@app.get("/findings")
+def findings():
  init_db()
- with conn() as d:r=d.execute("SELECT status,payload FROM records WHERE id=?",(rid,)).fetchone()
- if not r:return jsonify(error="not_found"),404
- if r["status"] in ("COMPLETE","RUNNING"):return jsonify(error="task_not_runnable",status=r["status"]),409
- x=json.loads(r["payload"]);x["status"]="RUNNING";x["attempts"]+=1;save(rid,"RUNNING",x)
- try:x["output"]=run_handler(x);x["status"]="COMPLETE";x["finished_at"]=now();save(rid,"COMPLETE",x);return jsonify(task=x,handoff=forward(x))
- except Exception as e:x.update(status="FAILED_REVIEW",error=str(e),finished_at=now());save(rid,"FAILED_REVIEW",x);audit(rid,"failed",{"error":str(e)});return jsonify(task=x),422
+ with conn() as d:rows=d.execute("SELECT id,payload FROM records ORDER BY updated DESC LIMIT 100").fetchall()
+ return jsonify(findings=[{"id":x["id"],"payload":json.loads(x["payload"])} for x in rows])
 
 if __name__=="__main__":
  init_db();app.run(host="0.0.0.0",port=int(os.getenv("PORT","10000")))

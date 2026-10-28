@@ -1,6 +1,6 @@
-# Approved Task Executor
+# Global Utility Scanner
 
-Execution requires recorded client approval. Only two safe allow-listed task types are included (`text_cleanup`, `json_validate`); arbitrary shell/code execution is deliberately disabled. Failed work goes to manual review.
+Find public pain/workaround signals via Hacker News Algolia and GitHub issue search. Configure `HN_QUERIES`, `GITHUB_QUERIES`, optional `GITHUB_TOKEN`, and `SCANNER_MAX_ITEMS`. Discovery signals are not proof of paid demand.
 
 ## Run locally
 `pip install -r requirements.txt` then `python app.py`. Set a strong `API_TOKEN` before exposing write endpoints. Set `DATABASE_PATH=/var/data/service.sqlite3` for a Render disk mounted at `/var/data`.
