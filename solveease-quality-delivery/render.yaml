@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: solveease-quality-delivery
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: API_TOKEN
+        sync: false
+      - key: DATABASE_PATH
+        value: /var/data/service.sqlite3
+    disk:
+      name: solveease-quality-delivery-data
+      mountPath: /var/data
+      sizeGB: 1
