@@ -1,6 +1,6 @@
-# Global Utility Scanner
+# Payment Verification
 
-Find public pain/workaround signals via Hacker News Algolia and GitHub issue search. Configure `HN_QUERIES`, `GITHUB_QUERIES`, optional `GITHUB_TOKEN`, and `SCANNER_MAX_ITEMS`. Discovery signals are not proof of paid demand.
+Payment verification intentionally defaults to UNVERIFIED. Implement provider-specific server-to-server verification and signed webhooks before production. Never trust screenshots or client-submitted paid status.
 
 ## Run locally
 `pip install -r requirements.txt` then `python app.py`. Set a strong `API_TOKEN` before exposing write endpoints. Set `DATABASE_PATH=/var/data/service.sqlite3` for a Render disk mounted at `/var/data`.
